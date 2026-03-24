@@ -1,0 +1,14 @@
+[package]
+name = "hearken-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ahash = "0.8.12"
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
+hearken-core = { version = "0.1.0", path = "../hearken-core" }
+hearken-ml = { version = "0.1.0", path = "../hearken-ml" }
+hearken-storage = { version = "0.1.0", path = "../hearken-storage" }
+rayon = "1.11.0"
+rusqlite = "0.39.0"

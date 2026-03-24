@@ -1,0 +1,13 @@
+[package]
+name = "hearken-storage"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hearken-core = { version = "0.1.0", path = "../hearken-core" }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tempfile = "3.27.0"
