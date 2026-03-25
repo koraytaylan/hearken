@@ -35,20 +35,39 @@ enum Commands {
         /// Query string for full-text search
         query: String,
     },
+    /// Generate an HTML report from the database
+    Report {
+        /// Output HTML file path
+        #[arg(long, default_value = "report.html")]
+        output: String,
+        /// Number of sample occurrences per pattern
+        #[arg(long, default_value_t = 5)]
+        samples: usize,
+        /// Maximum number of patterns to include (by occurrence count)
+        #[arg(long, default_value_t = 500)]
+        top: usize,
+        /// Only include patterns containing ANY of these substrings (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        filter: Option<Vec<String>>,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let mut storage = Storage::open(&cli.database)
+    let storage = Storage::open(&cli.database)
         .context("Failed to open database")?;
 
     match cli.command {
         Commands::Process { file, threshold, batch_size } => {
+            let mut storage = storage;
             process_log(&mut storage, &file, threshold, batch_size)?;
         }
         Commands::Search { query } => {
             search_patterns(&storage, &query)?;
+        }
+        Commands::Report { output, samples, top, filter } => {
+            generate_report(&storage, &output, samples, top, filter)?;
         }
     }
 
@@ -401,5 +420,111 @@ fn search_patterns(storage: &Storage, query: &str) -> Result<()> {
     for (id, template) in results {
         println!("[Pattern ID: {}] {}", id, template);
     }
+    Ok(())
+}
+
+fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: usize, top_n: usize, filter: Option<Vec<String>>) -> Result<()> {
+    let start = Instant::now();
+    println!("Generating report...");
+
+    let (pattern_count, total_occurrences, sources) = storage.get_report_summary()
+        .context("Failed to query report summary")?;
+
+    if pattern_count == 0 {
+        anyhow::bail!("No patterns found in database. Process a log file first.");
+    }
+
+    let patterns = storage.get_all_patterns_ranked(top_n, filter.as_deref())
+        .context("Failed to query patterns")?;
+
+    if let Some(ref f) = filter {
+        println!("  Filter: patterns containing any of {:?}", f);
+    }
+
+    println!("  Fetching samples for {} patterns...", patterns.len());
+    let mut pattern_data = Vec::with_capacity(patterns.len());
+    for (id, template, count) in &patterns {
+        let raw_samples = storage.get_pattern_samples(*id, samples_per_pattern)
+            .unwrap_or_default();
+        let samples: Vec<String> = raw_samples.iter().map(|vars| {
+            let mut var_iter = vars.split('\t');
+            let mut rebuilt = String::with_capacity(template.len() + vars.len());
+            let mut chars = template.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '<' && chars.peek() == Some(&'*') {
+                    chars.next(); // consume '*'
+                    if chars.peek() == Some(&'>') {
+                        chars.next(); // consume '>'
+                        if let Some(val) = var_iter.next() {
+                            rebuilt.push_str(val);
+                        } else {
+                            rebuilt.push_str("<*>");
+                        }
+                        continue;
+                    }
+                    rebuilt.push('<');
+                    rebuilt.push('*');
+                } else {
+                    rebuilt.push(c);
+                }
+            }
+            rebuilt
+        }).collect();
+        pattern_data.push(serde_json::json!({
+            "id": id,
+            "template": template,
+            "count": count,
+            "samples": samples,
+        }));
+    }
+
+    let now: String = {
+        let output = std::process::Command::new("date")
+            .arg("+%Y-%m-%d %H:%M:%S")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        output
+    };
+    let command = std::env::args().collect::<Vec<_>>().join(" ");
+    let report_json = serde_json::json!({
+        "pattern_count": pattern_count,
+        "total_occurrences": total_occurrences,
+        "sources": sources,
+        "generated_at": now,
+        "command": command,
+        "params": {
+            "top": top_n,
+            "samples": samples_per_pattern,
+            "filter": filter,
+            "output": output_path,
+        },
+        "patterns": pattern_data,
+    });
+
+    let json_str = serde_json::to_string(&report_json)
+        .context("Failed to serialize report data")?;
+
+    // Escape sequences that would break the <script> tag when embedded in HTML.
+    // "</script>" or "</Script>" etc. inside a string literal terminates the tag.
+    let json_str = json_str.replace("</", "<\\/");
+
+    let template = include_str!("report_template.html");
+    let html = template.replace("/*__REPORT_DATA__*/", &json_str);
+    let file_size_bytes = html.len();
+
+    // Inject the file size into the already-built HTML via a data attribute on the body
+    let html = html.replace("<body>", &format!("<body data-file-size=\"{}\">", file_size_bytes));
+
+    std::fs::write(output_path, &html)
+        .with_context(|| format!("Failed to write report to {}", output_path))?;
+
+    let elapsed = start.elapsed();
+    println!("Report generated in {:.1}s", elapsed.as_secs_f64());
+    println!("  Patterns: {}", pattern_count);
+    println!("  Total occurrences: {}", total_occurrences);
+    println!("  Output: {}", output_path);
+    println!("  Size: {:.1} KB", html.len() as f64 / 1024.0);
+
     Ok(())
 }

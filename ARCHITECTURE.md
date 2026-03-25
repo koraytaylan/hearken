@@ -192,10 +192,17 @@ CREATE INDEX idx_occ_source ON occurrences(log_source_id);
 |---|---|
 | `process <file>` | Process a log file and discover patterns |
 | `search <query>` | Full-text search across discovered patterns |
+| `report` | Generate a self-contained HTML report from the database |
 
 **Process options:**
 - `--threshold <f64>` — Similarity threshold for pattern matching (default: 0.5)
 - `--batch-size <usize>` — Lines per batch (default: 500,000)
+- `-d, --database <path>` — Database file path (default: `hearken.db`)
+
+**Report options:**
+- `--output <path>` — Output HTML file path (default: `report.html`)
+- `--samples <n>` — Sample occurrences per pattern (default: 5)
+- `--top <n>` — Maximum patterns to include, ranked by occurrence count (default: 500)
 - `-d, --database <path>` — Database file path (default: `hearken.db`)
 
 ### Multi-Line Entry Grouping (Unsupervised)
@@ -279,6 +286,38 @@ Every batch prints:
 Batch: parallel=Xms, sequential=Yms, db=Zms, templates=N
 ```
 This immediately reveals which phase is the bottleneck for a given workload.
+
+---
+
+## Report Generation (`report` subcommand)
+
+Generates a **single self-contained HTML file** from the database. The HTML includes all CSS, JavaScript, and data inline — no external dependencies, no server needed, works fully offline.
+
+### Data Strategy
+
+The database can contain millions of occurrence rows, but patterns themselves are compact. The report includes:
+
+- **Top N patterns** (default 500, configurable via `--top`) ranked by occurrence count, with template text and count.
+- **Sample occurrences** (default 5 per pattern, configurable via `--samples`) showing representative variable values. Fetched via the `idx_occ_pattern` index — one indexed query per pattern.
+- **Summary statistics**: total pattern count, total occurrence count, processed source files.
+
+This keeps the output at ~3-5 MB even for databases with millions of occurrences.
+
+### HTML Architecture
+
+The HTML template is compiled into the binary via `include_str!("report_template.html")`. At report time:
+
+1. Query summary stats, patterns, and samples from the DB.
+2. Serialize the data as JSON via `serde_json`.
+3. Inject the JSON into the HTML template as `const REPORT_DATA = {...};`.
+4. Write the complete HTML file.
+
+All rendering is done client-side with vanilla JavaScript (no frameworks). Features:
+
+- **Summary cards** with total patterns, occurrences, top pattern count, and source count.
+- **Searchable/sortable pattern table** with rank, template preview, count, percentage, and distribution bar.
+- **Expandable detail per pattern** showing the full template (with preserved newline structure for stack traces) and sample variable values.
+- **Copy-to-clipboard button** per pattern that formats the template, count, and samples into Jira-friendly text.
 
 ---
 

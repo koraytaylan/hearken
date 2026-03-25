@@ -116,6 +116,88 @@ impl Storage {
         for row in rows { results.push(row?); }
         Ok(results)
     }
+
+    pub fn get_all_patterns_ranked(
+        &self,
+        limit: usize,
+        filter: Option<&[String]>,
+    ) -> Result<Vec<(i64, String, i64)>, StorageError> {
+        let (sql, bind_values) = match filter {
+            Some(terms) if !terms.is_empty() => {
+                let conditions: Vec<String> = terms.iter()
+                    .map(|_| "template LIKE ?".to_string())
+                    .collect();
+                let where_clause = conditions.join(" OR ");
+                let sql = format!(
+                    "SELECT id, template, occurrence_count FROM patterns \
+                     WHERE occurrence_count > 0 AND ({}) \
+                     ORDER BY occurrence_count DESC LIMIT ?",
+                    where_clause
+                );
+                let values: Vec<String> = terms.iter()
+                    .map(|t| format!("%{}%", t))
+                    .collect();
+                (sql, values)
+            }
+            _ => {
+                let sql = "SELECT id, template, occurrence_count FROM patterns \
+                           WHERE occurrence_count > 0 \
+                           ORDER BY occurrence_count DESC LIMIT ?".to_string();
+                (sql, Vec::new())
+            }
+        };
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let _param_count = bind_values.len();
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = bind_values
+            .iter()
+            .map(|v| Box::new(v.clone()) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
+        params_vec.push(Box::new(limit as i64));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter()
+            .map(|p| p.as_ref())
+            .collect();
+
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+        let mut results = Vec::new();
+        for row in rows { results.push(row?); }
+        Ok(results)
+    }
+
+    pub fn get_pattern_samples(
+        &self,
+        pattern_id: i64,
+        limit: usize,
+    ) -> Result<Vec<String>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT variables FROM occurrences
+             WHERE pattern_id = ? AND variables IS NOT NULL AND variables != ''
+             LIMIT ?",
+        )?;
+        let rows = stmt.query_map(params![pattern_id, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut results = Vec::new();
+        for row in rows { results.push(row?); }
+        Ok(results)
+    }
+
+    pub fn get_report_summary(&self) -> Result<(i64, i64, Vec<String>), StorageError> {
+        let pattern_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM patterns", [], |row| row.get(0),
+        )?;
+        let total_occurrences: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(occurrence_count), 0) FROM patterns", [], |row| row.get(0),
+        )?;
+        let mut stmt = self.conn.prepare("SELECT file_path FROM log_sources")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut sources = Vec::new();
+        for row in rows { sources.push(row?); }
+        Ok((pattern_count, total_occurrences, sources))
+    }
 }
 
 #[cfg(test)]

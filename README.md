@@ -10,6 +10,7 @@ Hearken is a high-performance, unsupervised log analysis tool written in Rust. I
 - **Unsupervised Pattern Recognition:** Uses a [Drain](https://jiemingzhu.github.io/pub/pjhe_icws2017.pdf)-inspired prefix tree algorithm to automatically discover log templates. No regex, no training, no prior knowledge of the log format required.
 - **Multi-Line Entry Detection:** Automatically learns the structural format of log entries from a sample and groups continuation lines (stack traces, multi-line messages) with their parent entry — without any hardcoded patterns. Stack trace content is included in the pattern token stream so recurring exception shapes are discovered as first-class patterns.
 - **Full-Text Search:** Integrated SQLite FTS5 index for fast searching across discovered patterns.
+- **HTML Report Generation:** Generates a single self-contained HTML file with searchable/sortable pattern tables, sample occurrences, and copy-to-clipboard for Jira ticket creation — no server required, works fully offline.
 - **Resume Capability:** Tracks the last processed byte position per file, so interrupted runs pick up exactly where they left off.
 - **100% Offline:** Designed for isolated environments; no internet connection required.
 
@@ -47,6 +48,21 @@ Output includes per-batch timing breakdown (`parallel`, `sequential`, `db` phase
 # Search for patterns matching a keyword
 ./hearken-cli search "connection timeout"
 ```
+
+### Generate HTML Report
+
+```bash
+# Generate report from default database
+./hearken-cli report
+
+# Customize output and scope
+./hearken-cli report --output analysis.html --top 1000 --samples 10
+
+# Report from a specific database
+./hearken-cli -d my_analysis.db report
+```
+
+The report is a single self-contained HTML file (all CSS/JS/data inline) that opens in any browser and works offline. It includes searchable/sortable pattern tables, expandable details with sample variable values, and copy-to-clipboard for Jira ticket creation.
 
 ### Clean State and Reprocess
 
