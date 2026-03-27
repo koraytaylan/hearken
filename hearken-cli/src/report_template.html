@@ -69,6 +69,7 @@ tr:last-child td{border-bottom:none}
 .template-cell{font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;
   font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0}
 .wildcard{color:var(--accent);font-weight:600}
+.group-cell{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* Detail row */
 tr.detail-row{display:none}
@@ -104,6 +105,7 @@ tr.detail-row td{padding:0;background:var(--surface-alt)}
 .samples-list{display:flex;flex-direction:column;gap:8px}
 .collapsible.sample .col-preview{font-size:12px;color:var(--accent-dark)}
 .collapsible.sample .col-full{font-size:12px;color:var(--accent-dark)}
+.sample-source{font-size:10px;color:var(--text-secondary);font-family:-apple-system,sans-serif;margin-top:4px}
 
 /* Buttons */
 .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid var(--border);
@@ -166,6 +168,9 @@ tr.data-row.open .expand-icon{transform:rotate(90deg);color:var(--accent)}
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M11 11l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       <input type="text" id="search" placeholder="Search patterns..." autocomplete="off">
     </div>
+    <select id="group-filter" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;background:var(--surface);cursor:pointer">
+      <option value="">All groups</option>
+    </select>
     <div class="toolbar-info" id="toolbar-info"></div>
   </div>
 
@@ -173,11 +178,12 @@ tr.data-row.open .expand-icon{transform:rotate(90deg);color:var(--accent)}
     <table>
       <thead>
         <tr>
-          <th data-sort="rank" class="sorted" style="width:60px"># <span class="sort-arrow">▲</span></th>
+          <th data-sort="rank" class="sorted" style="width:50px"># <span class="sort-arrow">▲</span></th>
+          <th data-sort="group" style="width:120px">Group <span class="sort-arrow">▲</span></th>
           <th data-sort="template">Pattern Template <span class="sort-arrow">▲</span></th>
           <th data-sort="count" style="width:120px;text-align:right">Count <span class="sort-arrow">▲</span></th>
           <th data-sort="pct" style="width:100px;text-align:right">Share <span class="sort-arrow">▲</span></th>
-          <th style="width:140px">Distribution</th>
+          <th style="width:120px">Distribution</th>
         </tr>
       </thead>
       <tbody id="table-body"></tbody>
@@ -241,11 +247,29 @@ if (DATA.params) {
   pills.push(`<span class="pill"><strong>${DATA.params.samples}</strong> samples each</span>`);
   if (DATA.params.filter && DATA.params.filter.length > 0) {
     pills.push(`<span class="pill">Filter: <strong>${escapeHtml(DATA.params.filter.join(', '))}</strong></span>`);
-  } else {
-    pills.push(`<span class="pill">No filter</span>`);
+  }
+  if (DATA.params.group && DATA.params.group.length > 0) {
+    pills.push(`<span class="pill">Group: <strong>${escapeHtml(DATA.params.group.join(', '))}</strong></span>`);
   }
 }
+if (DATA.file_groups && DATA.file_groups.length > 0) {
+  pills.push(`<span class="pill"><strong>${DATA.file_groups.length}</strong> file group(s)</span>`);
+}
 params.innerHTML = pills.join('');
+
+// Populate group filter dropdown
+const groupSelect = document.getElementById('group-filter');
+if (DATA.file_groups) {
+  DATA.file_groups.forEach(g => {
+    const opt = document.createElement('option');
+    opt.value = g.name;
+    opt.textContent = `${g.name} (${formatNumber(g.pattern_count)})`;
+    groupSelect.appendChild(opt);
+  });
+}
+if (!DATA.file_groups || DATA.file_groups.length <= 1) {
+  groupSelect.style.display = 'none';
+}
 
 // Render command in footer
 if (DATA.command) {
@@ -305,13 +329,14 @@ function renderTable() {
     const rid = `row-${p.id}`;
     html += `<tr class="data-row" data-id="${p.id}" onclick="toggleDetail(${p.id})">
       <td class="rank-cell"><span class="expand-icon">›</span> ${i + 1}</td>
+      <td class="group-cell" title="${escapeHtml(p.group || '')}">${escapeHtml(p.group || '—')}</td>
       <td class="template-cell" title="${escapeHtml(p.template.split('\\n')[0])}">${highlightWildcards(truncate(p.template, 120))}</td>
       <td class="count-cell">${formatNumber(p.count)}</td>
       <td class="pct-cell">${pct.toFixed(1)}%</td>
       <td><div class="bar-bg"><div class="bar-fill" style="width:${barW}%"></div></div></td>
     </tr>
     <tr class="detail-row" id="detail-${p.id}">
-      <td colspan="5">
+      <td colspan="6">
         <div class="detail-content">
           <div class="detail-section">
             <div class="detail-label">Pattern Template
@@ -328,10 +353,14 @@ function renderTable() {
           <div class="detail-section">
             <div class="detail-label">Sample Occurrences (${p.samples.length})</div>
             <div class="samples-list">
-              ${p.samples.map((s, si) => `<div class="collapsible sample" id="sample-${p.id}-${si}" onclick="event.stopPropagation();toggleCollapsible('sample-${p.id}-${si}');">
-                <div class="col-preview"><span class="section-icon">›</span><span>${escapeHtml(truncate(s, 200))}</span></div>
-                <div class="col-full"><span class="section-icon">›</span>${escapeHtml(s)}</div>
-              </div>`).join('')}
+              ${p.samples.map((s, si) => {
+                const txt = typeof s === 'object' ? s.text : s;
+                const src = typeof s === 'object' ? s.source : '';
+                return `<div class="collapsible sample" id="sample-${p.id}-${si}" onclick="event.stopPropagation();toggleCollapsible('sample-${p.id}-${si}');">
+                <div class="col-preview"><span class="section-icon">›</span><span>${escapeHtml(truncate(txt, 200))}</span></div>
+                <div class="col-full"><span class="section-icon">›</span>${escapeHtml(txt)}${src ? `<div class="sample-source">📄 ${escapeHtml(src)}</div>` : ''}</div>
+              </div>`;
+              }).join('')}
             </div>
           </div>` : ''}
         </div>
@@ -357,12 +386,17 @@ function toggleCollapsible(elId) {
 function copyPattern(id) {
   const p = DATA.patterns.find(x => x.id === id);
   if (!p) return;
-  let text = `Pattern #${id} (${formatNumber(p.count)} occurrences)\n`;
-  text += '─'.repeat(50) + '\n';
+  let text = `Pattern #${id} (${formatNumber(p.count)} occurrences)`;
+  if (p.group) text += ` [${p.group}]`;
+  text += '\n' + '─'.repeat(50) + '\n';
   text += p.template + '\n';
   if (p.samples && p.samples.length > 0) {
-    text += '\nSample variables:\n';
-    p.samples.forEach((s, i) => { text += `  ${i + 1}. ${s}\n`; });
+    text += '\nSample occurrences:\n';
+    p.samples.forEach((s, i) => {
+      const txt = typeof s === 'object' ? s.text : s;
+      const src = typeof s === 'object' ? s.source : '';
+      text += `  ${i + 1}. ${txt}${src ? ' [' + src + ']' : ''}\n`;
+    });
   }
   navigator.clipboard.writeText(text).then(() => {
     const btn = document.getElementById(`copy-${id}`);
@@ -372,21 +406,31 @@ function copyPattern(id) {
   });
 }
 
-// Search
+// Search + Group filter
 const searchInput = document.getElementById('search');
+const groupFilterSelect = document.getElementById('group-filter');
 let searchTimeout;
+
+function applyFilters() {
+  const q = searchInput.value.toLowerCase().trim();
+  const groupVal = groupFilterSelect.value;
+  let result = [...DATA.patterns];
+  if (q) {
+    result = result.filter(p => p.template.toLowerCase().includes(q));
+  }
+  if (groupVal) {
+    result = result.filter(p => p.group === groupVal);
+  }
+  filtered = sortPatterns(result);
+  renderTable();
+}
+
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimeout);
-  searchTimeout = setTimeout(() => {
-    const q = searchInput.value.toLowerCase().trim();
-    if (!q) {
-      filtered = sortPatterns([...DATA.patterns]);
-    } else {
-      filtered = sortPatterns(DATA.patterns.filter(p => p.template.toLowerCase().includes(q)));
-    }
-    renderTable();
-  }, 150);
+  searchTimeout = setTimeout(applyFilters, 150);
 });
+
+groupFilterSelect.addEventListener('change', applyFilters);
 
 // Sorting
 function sortPatterns(arr) {
@@ -396,6 +440,7 @@ function sortPatterns(arr) {
     let va, vb;
     if (col === 'rank' || col === 'count' || col === 'pct') { va = a.count; vb = b.count; }
     else if (col === 'template') { va = a.template.toLowerCase(); vb = b.template.toLowerCase(); }
+    else if (col === 'group') { va = (a.group || '').toLowerCase(); vb = (b.group || '').toLowerCase(); }
     else { va = a.count; vb = b.count; }
     if (va < vb) return asc ? -1 : 1;
     if (va > vb) return asc ? 1 : -1;

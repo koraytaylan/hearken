@@ -7,10 +7,11 @@ Hearken is a high-performance, unsupervised log analysis tool written in Rust. I
 ## Features
 
 - **Extreme Efficiency:** Built in Rust with memory-mapped file I/O (`memmap2`) for processing multi-gigabyte log files (16 GB+) with minimal overhead. Release builds use LTO and single codegen unit for maximum throughput.
+- **Multi-File Processing with File Groups:** Process multiple log files at once with `hearken-cli process ~/logs/*.log`. Files are automatically grouped by their base name (stripping dates and numeric suffixes), and each group gets its own independent pattern discovery tree.
 - **Unsupervised Pattern Recognition:** Uses a [Drain](https://jiemingzhu.github.io/pub/pjhe_icws2017.pdf)-inspired prefix tree algorithm to automatically discover log templates. No regex, no training, no prior knowledge of the log format required.
 - **Multi-Line Entry Detection:** Automatically learns the structural format of log entries from a sample and groups continuation lines (stack traces, multi-line messages) with their parent entry — without any hardcoded patterns. Stack trace content is included in the pattern token stream so recurring exception shapes are discovered as first-class patterns.
 - **Full-Text Search:** Integrated SQLite FTS5 index for fast searching across discovered patterns.
-- **HTML Report Generation:** Generates a single self-contained HTML file with searchable/sortable pattern tables, sample occurrences, and copy-to-clipboard for Jira ticket creation — no server required, works fully offline.
+- **HTML Report Generation:** Generates a single self-contained HTML file with searchable/sortable pattern tables, file group filtering, sample occurrences with source file provenance, and copy-to-clipboard for Jira ticket creation — no server required, works fully offline.
 - **Resume Capability:** Tracks the last processed byte position per file, so interrupted runs pick up exactly where they left off.
 - **100% Offline:** Designed for isolated environments; no internet connection required.
 
@@ -24,11 +25,14 @@ The binary will be at `target/release/hearken-cli`.
 
 ## Usage
 
-### Process a Log File
+### Process Log Files
 
 ```bash
-# Process a file and discover patterns
+# Process a single file
 ./hearken-cli process /var/log/syslog
+
+# Process multiple files — files are auto-grouped by base name
+./hearken-cli process ~/logs/*.log
 
 # Tune similarity threshold (0.0–1.0, default 0.5)
 ./hearken-cli process --threshold 0.4 server.log
@@ -40,7 +44,12 @@ The binary will be at `target/release/hearken-cli`.
 ./hearken-cli -d my_analysis.db process server.log
 ```
 
-Output includes per-batch timing breakdown (`parallel`, `sequential`, `db` phases in ms) and a summary of the top 10 most frequent patterns.
+**File Grouping:** When multiple files are passed, they are grouped by their base name. Date patterns (YYYY-MM-DD, YYYYMMDD) and numeric suffixes are stripped:
+- `error.log.2024-10-01`, `error.log.2024-10-02` → group `error.log`
+- `error.20241001.log`, `error.20241002.log` → group `error.log`
+- `access.log`, `access.log.1` → group `access.log`
+
+Each group gets its own independent Drain tree, so patterns from `error.log` and `access.log` never interfere with each other.
 
 ### Search Processed Patterns
 
@@ -58,11 +67,17 @@ Output includes per-batch timing breakdown (`parallel`, `sequential`, `db` phase
 # Customize output and scope
 ./hearken-cli report --output analysis.html --top 1000 --samples 10
 
+# Filter patterns by substring
+./hearken-cli report --filter '*WARN*,*ERROR*'
+
+# Filter by file group
+./hearken-cli report --group error.log,access.log
+
 # Report from a specific database
 ./hearken-cli -d my_analysis.db report
 ```
 
-The report is a single self-contained HTML file (all CSS/JS/data inline) that opens in any browser and works offline. It includes searchable/sortable pattern tables, expandable details with sample variable values, and copy-to-clipboard for Jira ticket creation.
+The report is a single self-contained HTML file (all CSS/JS/data inline) that opens in any browser and works offline. It includes searchable/sortable pattern tables, file group column and filter dropdown, expandable details with reconstructed sample occurrences (showing source file provenance), and copy-to-clipboard for Jira ticket creation.
 
 ### Clean State and Reprocess
 
@@ -101,9 +116,10 @@ State is stored in a plain SQLite database (`hearken.db` by default) with WAL mo
 
 | Table | Purpose |
 |---|---|
-| `log_sources` | Tracks processed files and last byte position for resume |
-| `patterns` | Discovered templates with `occurrence_count` for quick ranking |
-| `occurrences` | Every matched entry: `pattern_id`, byte offset (`timestamp` column), extracted `variables` (tab-separated) |
+| `file_groups` | Groups of related log files (e.g., `error.log`, `access.log`) — each group has independent pattern discovery |
+| `log_sources` | Tracks processed files, their file group, and last byte position for resume |
+| `patterns` | Discovered templates with `occurrence_count`, scoped to a `file_group_id` (same template can exist in different groups) |
+| `occurrences` | Every matched entry: `pattern_id`, `log_source_id`, byte offset, extracted `variables` (tab-separated) |
 | `patterns_fts` | FTS5 virtual table mirroring `patterns` for full-text search |
 
 ## Architecture

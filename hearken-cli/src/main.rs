@@ -4,7 +4,8 @@ use hearken_core::{LogReader, LogTemplate, tokenize};
 use hearken_ml::LogParser;
 use hearken_storage::Storage;
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 use std::time::Instant;
 
 #[derive(Parser)]
@@ -19,10 +20,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Process a log file
+    /// Process log file(s)
     Process {
-        /// Path to the log file
-        file: String,
+        /// Path(s) to log file(s) — use shell glob e.g. ~/logs/*.log
+        #[arg(required = true)]
+        files: Vec<String>,
         /// Similarity threshold for pattern matching (0.0 to 1.0)
         #[arg(long, default_value_t = 0.5)]
         threshold: f64,
@@ -49,6 +51,9 @@ enum Commands {
         /// Only include patterns containing ANY of these substrings (comma-separated)
         #[arg(long, value_delimiter = ',')]
         filter: Option<Vec<String>>,
+        /// Only include patterns from these file groups (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
 }
 
@@ -59,15 +64,15 @@ fn main() -> Result<()> {
         .context("Failed to open database")?;
 
     match cli.command {
-        Commands::Process { file, threshold, batch_size } => {
+        Commands::Process { files, threshold, batch_size } => {
             let mut storage = storage;
-            process_log(&mut storage, &file, threshold, batch_size)?;
+            process_files(&mut storage, &files, threshold, batch_size)?;
         }
         Commands::Search { query } => {
             search_patterns(&storage, &query)?;
         }
-        Commands::Report { output, samples, top, filter } => {
-            generate_report(&storage, &output, samples, top, filter)?;
+        Commands::Report { output, samples, top, filter, group } => {
+            generate_report(&storage, &output, samples, top, filter, group)?;
         }
     }
 
@@ -196,35 +201,100 @@ fn group_entries<'a>(lines: &[(u64, &'a str, u64)], entry_fps: &HashSet<String>)
     entries
 }
 
-fn process_log(storage: &mut Storage, file_path: &str, threshold: f64, batch_size: usize) -> Result<()> {
-    println!("Processing log file: {}", file_path);
-    
-    let source = storage.get_or_create_log_source(file_path)?;
-    let reader = LogReader::new(file_path)?;
-    let mut current_pos = source.last_processed_position;
-    
-    let mut parser = LogParser::new(15, threshold);
-    
-    // In-memory cache: template_index → DB pattern ID
-    let mut pattern_id_cache: HashMap<usize, i64> = HashMap::new();
-    // In-memory occurrence counts: template_index → count
-    let mut occurrence_counts: HashMap<usize, u64> = HashMap::new();
-
-    // Seed parser from DB and populate cache
-    {
-        let mut stmt = storage.conn.prepare("SELECT id, template FROM patterns")?;
-        let rows = stmt.query_map([], |row| Ok(LogTemplate {
-            id: Some(row.get(0)?),
-            template: row.get(1)?,
-        }))?;
-        for row in rows {
-            let template = row?;
-            let db_id = template.id.unwrap();
-            let idx = parser.templates.len();
-            parser.add_template(template);
-            pattern_id_cache.insert(idx, db_id);
+fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, batch_size: usize) -> Result<()> {
+    let groups = group_files(file_paths);
+    println!("Found {} file group(s) from {} file(s):", groups.len(), file_paths.len());
+    for (group_name, files) in &groups {
+        println!("  {} ({} file(s))", group_name, files.len());
+        for f in files {
+            println!("    - {}", f);
         }
     }
+    println!();
+
+    for (group_name, files) in &groups {
+        println!("═══ Processing group: {} ═══", group_name);
+        let file_group_id = storage.get_or_create_file_group(group_name)
+            .context("Failed to create file group")?;
+
+        let mut parser = LogParser::new(15, threshold);
+        let mut pattern_id_cache: HashMap<usize, i64> = HashMap::new();
+        let mut occurrence_counts: HashMap<usize, u64> = HashMap::new();
+
+        // Seed parser from existing patterns for this group
+        {
+            let mut stmt = storage.conn.prepare(
+                "SELECT id, template FROM patterns WHERE file_group_id = ?"
+            )?;
+            let rows = stmt.query_map(rusqlite::params![file_group_id], |row| Ok(LogTemplate {
+                id: Some(row.get(0)?),
+                template: row.get(1)?,
+            }))?;
+            for row in rows {
+                let template = row?;
+                let db_id = template.id.unwrap();
+                let idx = parser.templates.len();
+                parser.add_template(template);
+                pattern_id_cache.insert(idx, db_id);
+            }
+        }
+
+        for file_path in files {
+            process_file(
+                storage, file_path, file_group_id,
+                &mut parser, &mut pattern_id_cache, &mut occurrence_counts,
+                batch_size,
+            )?;
+        }
+
+        // Write occurrence counts and rebuild FTS for this group
+        println!("Writing pattern counts for group '{}'...", group_name);
+        {
+            let tx = storage.conn.transaction()?;
+            {
+                let mut update_stmt = tx.prepare("UPDATE patterns SET occurrence_count = ? WHERE id = ?")?;
+                for (template_idx, count) in &occurrence_counts {
+                    if let Some(&pattern_id) = pattern_id_cache.get(template_idx) {
+                        update_stmt.execute(rusqlite::params![*count as i64, pattern_id])?;
+                    }
+                }
+            }
+            tx.commit()?;
+        }
+
+        println!("Group '{}': {} patterns discovered.\n", group_name, parser.templates.len());
+    }
+
+    // Rebuild FTS index once at the end
+    println!("Rebuilding search index...");
+    {
+        let tx = storage.conn.transaction()?;
+        tx.execute("DELETE FROM patterns_fts", [])?;
+        tx.execute(
+            "INSERT INTO patterns_fts (pattern_id, template) SELECT id, template FROM patterns",
+            [],
+        )?;
+        tx.commit()?;
+    }
+
+    println!("Done.");
+    Ok(())
+}
+
+fn process_file(
+    storage: &mut Storage,
+    file_path: &str,
+    file_group_id: i64,
+    parser: &mut LogParser,
+    pattern_id_cache: &mut HashMap<usize, i64>,
+    occurrence_counts: &mut HashMap<usize, u64>,
+    batch_size: usize,
+) -> Result<()> {
+    println!("Processing: {}", file_path);
+
+    let source = storage.get_or_create_log_source(file_path, file_group_id)?;
+    let reader = LogReader::new(file_path)?;
+    let mut current_pos = source.last_processed_position;
 
     let file_size = reader.len();
     let mut total_lines: u64 = 0;
@@ -332,11 +402,18 @@ fn process_log(storage: &mut Storage, file_path: &str, threshold: f64, batch_siz
         let tx = storage.conn.transaction()?;
 
         for (template_idx, template_str) in &new_patterns {
-            let changes = tx.execute("INSERT OR IGNORE INTO patterns (template) VALUES (?)", rusqlite::params![template_str])?;
+            let changes = tx.execute(
+                "INSERT OR IGNORE INTO patterns (file_group_id, template) VALUES (?, ?)",
+                rusqlite::params![file_group_id, template_str],
+            )?;
             let id: i64 = if changes > 0 {
                 tx.last_insert_rowid()
             } else {
-                tx.query_row("SELECT id FROM patterns WHERE template = ?", rusqlite::params![template_str], |row| row.get(0))?
+                tx.query_row(
+                    "SELECT id FROM patterns WHERE file_group_id = ? AND template = ?",
+                    rusqlite::params![file_group_id, template_str],
+                    |row| row.get(0),
+                )?
             };
             pattern_id_cache.insert(*template_idx, id);
             parser.templates[*template_idx].id = Some(id);
@@ -383,34 +460,7 @@ fn process_log(storage: &mut Storage, file_path: &str, threshold: f64, batch_siz
             parallel_ms, sequential_ms, db_ms, parser.templates.len());
     }
 
-    // Write occurrence counts and rebuild FTS index in a single transaction
-    println!("Writing pattern counts and rebuilding search index...");
-    {
-        let tx = storage.conn.transaction()?;
-        {
-            let mut update_stmt = tx.prepare("UPDATE patterns SET occurrence_count = ? WHERE id = ?")?;
-            for (template_idx, count) in &occurrence_counts {
-                if let Some(&pattern_id) = pattern_id_cache.get(template_idx) {
-                    update_stmt.execute(rusqlite::params![*count as i64, pattern_id])?;
-                }
-            }
-        }
-        tx.execute("DELETE FROM patterns_fts", [])?;
-        tx.execute(
-            "INSERT INTO patterns_fts (pattern_id, template) SELECT id, template FROM patterns",
-            [],
-        )?;
-        tx.commit()?;
-    }
-
-    println!("\nProcessed {} lines, discovered {} patterns.", total_lines, parser.templates.len());
-    println!("\nAnalysis Summary:");
-    let top_patterns = storage.get_top_patterns(10)?;
-    println!("Top 10 Prevalent Patterns:");
-    for (template, count) in top_patterns {
-        println!("  - [{} occurrences] {}", count, template);
-    }
-
+    println!("  {} lines processed.", total_lines);
     Ok(())
 }
 
@@ -423,30 +473,33 @@ fn search_patterns(storage: &Storage, query: &str) -> Result<()> {
     Ok(())
 }
 
-fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: usize, top_n: usize, filter: Option<Vec<String>>) -> Result<()> {
+fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: usize, top_n: usize, filter: Option<Vec<String>>, group_filter: Option<Vec<String>>) -> Result<()> {
     let start = Instant::now();
     println!("Generating report...");
 
-    let (pattern_count, total_occurrences, sources) = storage.get_report_summary()
+    let (pattern_count, total_occurrences, sources, file_groups) = storage.get_report_summary()
         .context("Failed to query report summary")?;
 
     if pattern_count == 0 {
         anyhow::bail!("No patterns found in database. Process a log file first.");
     }
 
-    let patterns = storage.get_all_patterns_ranked(top_n, filter.as_deref())
+    let patterns = storage.get_all_patterns_ranked(top_n, filter.as_deref(), group_filter.as_deref())
         .context("Failed to query patterns")?;
 
     if let Some(ref f) = filter {
         println!("  Filter: patterns containing any of {:?}", f);
     }
+    if let Some(ref g) = group_filter {
+        println!("  Group filter: {:?}", g);
+    }
 
     println!("  Fetching samples for {} patterns...", patterns.len());
     let mut pattern_data = Vec::with_capacity(patterns.len());
-    for (id, template, count) in &patterns {
+    for (id, template, count, group_name) in &patterns {
         let raw_samples = storage.get_pattern_samples(*id, samples_per_pattern)
             .unwrap_or_default();
-        let samples: Vec<String> = raw_samples.iter().map(|vars| {
+        let samples: Vec<serde_json::Value> = raw_samples.iter().map(|(vars, source_path)| {
             let mut var_iter = vars.split('\t');
             let mut rebuilt = String::with_capacity(template.len() + vars.len());
             let mut chars = template.chars().peekable();
@@ -468,12 +521,17 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
                     rebuilt.push(c);
                 }
             }
-            rebuilt
+            serde_json::json!({
+                "text": rebuilt,
+                "source": Path::new(source_path).file_name()
+                    .and_then(|f| f.to_str()).unwrap_or(source_path),
+            })
         }).collect();
         pattern_data.push(serde_json::json!({
             "id": id,
             "template": template,
             "count": count,
+            "group": group_name,
             "samples": samples,
         }));
     }
@@ -491,12 +549,16 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
         "pattern_count": pattern_count,
         "total_occurrences": total_occurrences,
         "sources": sources,
+        "file_groups": file_groups.iter().map(|(name, count)| {
+            serde_json::json!({"name": name, "pattern_count": count})
+        }).collect::<Vec<_>>(),
         "generated_at": now,
         "command": command,
         "params": {
             "top": top_n,
             "samples": samples_per_pattern,
             "filter": filter,
+            "group": group_filter,
             "output": output_path,
         },
         "patterns": pattern_data,
@@ -527,4 +589,170 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
     println!("  Size: {:.1} KB", html.len() as f64 / 1024.0);
 
     Ok(())
+}
+
+/// Derives a canonical file group name from a log file path by stripping
+/// date patterns (YYYY-MM-DD, YYYYMMDD) and numeric suffixes from the filename.
+/// Files that share the same group name are assumed to have the same log format.
+fn derive_group_name(file_path: &str) -> String {
+    let filename = Path::new(file_path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(file_path);
+
+    let mut name = filename.to_string();
+
+    // Strip YYYY-MM-DD or YYYY_MM_DD patterns
+    loop {
+        let before = name.clone();
+        name = strip_pattern(&name, |s| {
+            let bytes = s.as_bytes();
+            if bytes.len() >= 10
+                && bytes[0..4].iter().all(|b| b.is_ascii_digit())
+                && (bytes[4] == b'-' || bytes[4] == b'_')
+                && bytes[5..7].iter().all(|b| b.is_ascii_digit())
+                && (bytes[7] == b'-' || bytes[7] == b'_')
+                && bytes[8..10].iter().all(|b| b.is_ascii_digit())
+            {
+                return Some(10);
+            }
+            None
+        });
+        // Strip YYYYMMDD patterns (8 consecutive digits that look like a date)
+        name = strip_pattern(&name, |s| {
+            let bytes = s.as_bytes();
+            if bytes.len() >= 8 && bytes[0..8].iter().all(|b| b.is_ascii_digit()) {
+                let year = &s[0..4];
+                let month = &s[4..6];
+                let day = &s[6..8];
+                if let (Ok(y), Ok(m), Ok(d)) = (year.parse::<u32>(), month.parse::<u32>(), day.parse::<u32>()) {
+                    if (1900..=2100).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d) {
+                        if bytes.len() == 8 || !bytes[8].is_ascii_digit() {
+                            return Some(8);
+                        }
+                    }
+                }
+            }
+            None
+        });
+        if name == before { break; }
+    }
+
+    // Strip trailing pure-numeric segments (e.g., .1, .2, .003)
+    loop {
+        let before = name.clone();
+        if let Some(dot_pos) = name.rfind('.') {
+            let suffix = &name[dot_pos + 1..];
+            if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+                name = name[..dot_pos].to_string();
+            }
+        }
+        if name == before { break; }
+    }
+
+    // Clean up: normalize separators to dots, collapse consecutive ones
+    let mut cleaned = String::with_capacity(name.len());
+    let mut last_sep = false;
+    for c in name.chars() {
+        if c == '.' || c == '-' || c == '_' {
+            if !last_sep && !cleaned.is_empty() {
+                cleaned.push('.');
+            }
+            last_sep = true;
+        } else {
+            cleaned.push(c);
+            last_sep = false;
+        }
+    }
+    while cleaned.ends_with('.') {
+        cleaned.pop();
+    }
+
+    if cleaned.is_empty() { filename.to_string() } else { cleaned }
+}
+
+/// Helper: finds and removes the first occurrence of a pattern detected by `detector`.
+fn strip_pattern(input: &str, detector: impl Fn(&str) -> Option<usize>) -> String {
+    for i in 0..input.len() {
+        if let Some(match_len) = detector(&input[i..]) {
+            let mut result = String::with_capacity(input.len());
+            result.push_str(&input[..i]);
+            if i + match_len < input.len() {
+                result.push_str(&input[i + match_len..]);
+            }
+            return result;
+        }
+    }
+    input.to_string()
+}
+
+/// Groups file paths by their derived group name.
+/// Returns a BTreeMap (sorted by group name) of group_name → sorted file paths.
+fn group_files(file_paths: &[String]) -> BTreeMap<String, Vec<String>> {
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for path in file_paths {
+        let group = derive_group_name(path);
+        groups.entry(group).or_default().push(path.clone());
+    }
+    for files in groups.values_mut() {
+        files.sort();
+    }
+    groups
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_group_name_date_suffix() {
+        assert_eq!(derive_group_name("error.log.2026-03-01"), "error.log");
+        assert_eq!(derive_group_name("error.log.2026-03-02"), "error.log");
+        assert_eq!(derive_group_name("/var/log/error.log.2026-10-23"), "error.log");
+    }
+
+    #[test]
+    fn test_derive_group_name_date_infix() {
+        assert_eq!(derive_group_name("error.20260301.log"), "error.log");
+        assert_eq!(derive_group_name("error.20260302.log"), "error.log");
+    }
+
+    #[test]
+    fn test_derive_group_name_numeric_suffix() {
+        assert_eq!(derive_group_name("error.log.1"), "error.log");
+        assert_eq!(derive_group_name("error.log.42"), "error.log");
+    }
+
+    #[test]
+    fn test_derive_group_name_plain() {
+        assert_eq!(derive_group_name("access.log"), "access.log");
+        assert_eq!(derive_group_name("request.log"), "request.log");
+        assert_eq!(derive_group_name("/home/user/logs/app.log"), "app.log");
+    }
+
+    #[test]
+    fn test_derive_group_name_underscore_date() {
+        // Underscores in original name are preserved
+        assert_eq!(derive_group_name("app_2026_03_15.log"), "app.log");
+        assert_eq!(derive_group_name("app-2026-03-15.log"), "app.log");
+    }
+
+    #[test]
+    fn test_derive_group_name_preserves_non_date_numbers() {
+        assert_eq!(derive_group_name("server8080.log"), "server8080.log");
+    }
+
+    #[test]
+    fn test_group_files() {
+        let files = vec![
+            "error.log.2026-03-02".to_string(),
+            "error.log.2026-03-01".to_string(),
+            "access.log".to_string(),
+            "access.log.1".to_string(),
+        ];
+        let groups = group_files(&files);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups["access.log"], vec!["access.log", "access.log.1"]);
+        assert_eq!(groups["error.log"], vec!["error.log.2026-03-01", "error.log.2026-03-02"]);
+    }
 }

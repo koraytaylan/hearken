@@ -23,8 +23,8 @@ hearken/
 
 ### Data Models
 
-- **`LogSource`** — Represents a tracked log file: `id`, `file_path`, `last_processed_position` (byte offset for resume), `file_hash`.
-- **`LogTemplate`** — A discovered pattern: `id`, `template` (space-joined token string, with `<*>` for variable positions).
+- **`LogSource`** — Represents a tracked log file: `id`, `file_path`, `file_group_id`, `last_processed_position` (byte offset for resume), `file_hash`.
+- **`LogTemplate`** — A discovered pattern: `id`, `template` (space-joined token string, with `<*>` for variable positions). Scoped to a file group.
 - **`LogOccurrence`** — A single log entry matched against a template: `id`, `log_source_id`, `pattern_id`, `timestamp`, `variables`, `raw_message`.
 
 ### `tokenize(input)` — Delimiter-Aware Tokenizer
@@ -138,19 +138,30 @@ Performance-critical pragmas applied at connection open:
 ### Schema
 
 ```sql
+-- Groups of related log files (e.g., error.log, access.log)
+CREATE TABLE file_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL
+);
+
 -- Tracks processed log files and resume position
 CREATE TABLE log_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_path TEXT UNIQUE NOT NULL,
+    file_group_id INTEGER NOT NULL,
     last_processed_position INTEGER DEFAULT 0,
-    file_hash TEXT
+    file_hash TEXT,
+    FOREIGN KEY(file_group_id) REFERENCES file_groups(id)
 );
 
--- Discovered log templates with occurrence count
+-- Discovered log templates with occurrence count, scoped per file group
 CREATE TABLE patterns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    template TEXT UNIQUE NOT NULL,
-    occurrence_count INTEGER DEFAULT 0
+    file_group_id INTEGER NOT NULL,
+    template TEXT NOT NULL,
+    occurrence_count INTEGER DEFAULT 0,
+    FOREIGN KEY(file_group_id) REFERENCES file_groups(id),
+    UNIQUE(file_group_id, template)
 );
 
 -- Every matched log entry: one row per entry
@@ -172,13 +183,17 @@ CREATE VIRTUAL TABLE patterns_fts USING fts5(
 
 CREATE INDEX idx_occ_pattern ON occurrences(pattern_id);
 CREATE INDEX idx_occ_source ON occurrences(log_source_id);
+CREATE INDEX idx_patterns_group ON patterns(file_group_id);
 ```
 
 ### Key Methods
 
-- **`get_or_create_log_source(path)`** — Upserts a log source and returns it with the last processed position.
+- **`get_or_create_file_group(name)`** — Upserts a file group and returns its ID.
+- **`get_or_create_log_source(path, file_group_id)`** — Upserts a log source and returns it with the last processed position.
 - **`search_patterns(query)`** — Full-text search via `patterns_fts MATCH`.
 - **`get_top_patterns(limit)`** — Returns the N most frequent patterns by `occurrence_count`.
+- **`get_all_patterns_ranked(limit, filter, group_filter)`** — Returns top patterns with optional template and group filtering.
+- **`get_pattern_samples(pattern_id, limit)`** — Returns sample variable strings with source file paths.
 
 ---
 
@@ -190,7 +205,7 @@ CREATE INDEX idx_occ_source ON occurrences(log_source_id);
 
 | Command | Description |
 |---|---|
-| `process <file>` | Process a log file and discover patterns |
+| `process <files...>` | Process one or more log files, auto-grouped by base name |
 | `search <query>` | Full-text search across discovered patterns |
 | `report` | Generate a self-contained HTML report from the database |
 
@@ -199,10 +214,25 @@ CREATE INDEX idx_occ_source ON occurrences(log_source_id);
 - `--batch-size <usize>` — Lines per batch (default: 500,000)
 - `-d, --database <path>` — Database file path (default: `hearken.db`)
 
+### File Grouping
+
+When multiple files are passed (e.g., `hearken-cli process ~/logs/*.log`), they are automatically grouped by base name using `derive_group_name()`. This function strips date patterns (YYYY-MM-DD, YYYYMMDD) and numeric suffixes to find the canonical group name:
+
+| Input | Group |
+|---|---|
+| `error.log.2024-10-01` | `error.log` |
+| `error.20241001.log` | `error.log` |
+| `access.log.1` | `access.log` |
+| `request.log` | `request.log` |
+
+Each file group gets its own `LogParser` instance (Drain tree), seeded from any existing patterns for that group in the database. Files within a group are processed in sorted order (alphabetical ≈ chronological for date-suffixed files). This ensures patterns from different log types (error vs access vs request) never interfere with each other.
+
 **Report options:**
 - `--output <path>` — Output HTML file path (default: `report.html`)
 - `--samples <n>` — Sample occurrences per pattern (default: 5)
 - `--top <n>` — Maximum patterns to include, ranked by occurrence count (default: 500)
+- `--group <name>` — Filter report to specific file group(s), repeatable
+- `--filter <text>` — Filter patterns by template content (e.g., `*ERROR*`)
 - `-d, --database <path>` — Database file path (default: `hearken.db`)
 
 ### Multi-Line Entry Grouping (Unsupervised)
@@ -219,14 +249,23 @@ Before processing, hearken auto-detects the structural format of log entries:
 
 During tokenization, all continuation lines are tokenized using the delimiter-aware `tokenize()` function and appended to the primary line's token stream, with a `"\n"` sentinel token inserted before each continuation line's tokens. The combined stream is capped at 1024 tokens. This means stack traces, `Caused by:` chains, and other multi-line content become part of the pattern — the Drain tree naturally discovers recurring stack trace shapes (e.g., `at com.example.app... at com.example.db...`) with variable parts (line numbers, versions) replaced by `<*>` wildcards, while the `"\n"` sentinels preserve the line structure so stack traces display correctly in the database.
 
-### Processing Pipeline (`process_log`)
+### Processing Pipeline
 
 ```
+┌────────────────────────────────────────────────────────────┐
+│  Startup                                                   │
+│  1. Open/create DB                                         │
+│  2. Derive file groups from filenames                      │
+│  3. For each group:                                        │
+│     a. Create LogParser, seed with group's DB patterns     │
+│     b. Process each file in sorted order (see below)       │
+│  4. Rebuild FTS5 index once at the end                     │
+└────────────────────────────────────────────────────────────┘
+
+Per-File Processing (shared LogParser within group):
 ┌─────────────────────────────────────────────────────────┐
-│  Startup                                                │
-│  1. Open/create DB, load existing patterns into parser  │
-│  2. Read last_processed_position for resume             │
-│  3. Memory-map the log file                             │
+│  1. Read last_processed_position for resume             │
+│  2. Memory-map the log file                             │
 └─────────────────────┬───────────────────────────────────┘
                       │
           ┌───────────▼──────────────┐
@@ -257,7 +296,7 @@ During tokenization, all continuation lines are tokenized using the delimiter-aw
                       │
      ┌────────────────▼────────────────────────────┐
      │  Step 3: DB Phase (single transaction)      │
-     │  • INSERT new patterns                      │
+     │  • INSERT new patterns (with file_group_id) │
      │  • UPDATE evolved patterns                  │
      │  • INSERT occurrence rows (per entry)       │
      │  • UPDATE last_processed_position           │
@@ -265,14 +304,7 @@ During tokenization, all continuation lines are tokenized using the delimiter-aw
                       │
           ┌───────────▼──────────────┐
           │  Next batch or finish    │
-          └───────────┬──────────────┘
-                      │
-     ┌────────────────▼────────────────────────────┐
-     │  Finalization                               │
-     │  • Write occurrence_count to patterns table │
-     │  • Rebuild FTS5 index                       │
-     │  • Print top 10 patterns summary            │
-     └─────────────────────────────────────────────┘
+          └──────────────────────────┘
 ```
 
 ### Template Evolution and ID Signaling
@@ -297,9 +329,10 @@ Generates a **single self-contained HTML file** from the database. The HTML incl
 
 The database can contain millions of occurrence rows, but patterns themselves are compact. The report includes:
 
-- **Top N patterns** (default 500, configurable via `--top`) ranked by occurrence count, with template text and count.
-- **Sample occurrences** (default 5 per pattern, configurable via `--samples`) showing representative variable values. Fetched via the `idx_occ_pattern` index — one indexed query per pattern.
-- **Summary statistics**: total pattern count, total occurrence count, processed source files.
+- **Top N patterns** (default 500, configurable via `--top`) ranked by occurrence count, with template text, count, and file group name.
+- **Sample occurrences** (default 5 per pattern, configurable via `--samples`) showing reconstructed full log entries with source file provenance.
+- **File group breakdown**: pattern count per group, listed in the header.
+- **Summary statistics**: total pattern count, total occurrence count, processed source files, applied filters.
 
 This keeps the output at ~3-5 MB even for databases with millions of occurrences.
 
@@ -307,17 +340,19 @@ This keeps the output at ~3-5 MB even for databases with millions of occurrences
 
 The HTML template is compiled into the binary via `include_str!("report_template.html")`. At report time:
 
-1. Query summary stats, patterns, and samples from the DB.
+1. Query summary stats, patterns, and samples from the DB (filtered by `--group` and `--filter` if provided).
 2. Serialize the data as JSON via `serde_json`.
 3. Inject the JSON into the HTML template as `const REPORT_DATA = {...};`.
-4. Write the complete HTML file.
+4. Write the complete HTML file with file size embedded as a `data-file-size` body attribute.
 
 All rendering is done client-side with vanilla JavaScript (no frameworks). Features:
 
-- **Summary cards** with total patterns, occurrences, top pattern count, and source count.
-- **Searchable/sortable pattern table** with rank, template preview, count, percentage, and distribution bar.
-- **Expandable detail per pattern** showing the full template (with preserved newline structure for stack traces) and sample variable values.
-- **Copy-to-clipboard button** per pattern that formats the template, count, and samples into Jira-friendly text.
+- **Summary cards** with total patterns, occurrences, top pattern count, source count, and file groups.
+- **Header pills** showing applied filters, limits, sample count, and command used.
+- **Searchable/sortable pattern table** with rank, group, template preview, count, percentage, and distribution bar.
+- **Group filter dropdown** to narrow the table to a specific file group.
+- **Expandable detail per pattern** showing a collapsible template view and individually collapsible sample occurrences with source file attribution.
+- **Copy-to-clipboard button** per pattern that formats the group, template, count, and samples into Jira-friendly text.
 
 ---
 

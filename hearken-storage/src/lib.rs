@@ -41,17 +41,27 @@ impl Storage {
     fn init_schema(&self) -> RusqliteResult<()> {
         self.conn.execute_batch(
             "
+            CREATE TABLE IF NOT EXISTS file_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS log_sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 file_path TEXT UNIQUE NOT NULL,
+                file_group_id INTEGER NOT NULL,
                 last_processed_position INTEGER DEFAULT 0,
-                file_hash TEXT
+                file_hash TEXT,
+                FOREIGN KEY(file_group_id) REFERENCES file_groups(id)
             );
 
             CREATE TABLE IF NOT EXISTS patterns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                template TEXT UNIQUE NOT NULL,
-                occurrence_count INTEGER DEFAULT 0
+                file_group_id INTEGER NOT NULL,
+                template TEXT NOT NULL,
+                occurrence_count INTEGER DEFAULT 0,
+                FOREIGN KEY(file_group_id) REFERENCES file_groups(id),
+                UNIQUE(file_group_id, template)
             );
 
             CREATE TABLE IF NOT EXISTS occurrences (
@@ -71,15 +81,29 @@ impl Storage {
 
             CREATE INDEX IF NOT EXISTS idx_occ_pattern ON occurrences(pattern_id);
             CREATE INDEX IF NOT EXISTS idx_occ_source ON occurrences(log_source_id);
+            CREATE INDEX IF NOT EXISTS idx_patterns_group ON patterns(file_group_id);
             ",
         )?;
         Ok(())
     }
 
-    pub fn get_or_create_log_source(&self, path: &str) -> Result<LogSource, StorageError> {
+    pub fn get_or_create_file_group(&self, name: &str) -> Result<i64, StorageError> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO log_sources (file_path) VALUES (?)",
-            params![path],
+            "INSERT OR IGNORE INTO file_groups (name) VALUES (?)",
+            params![name],
+        )?;
+        let id: i64 = self.conn.query_row(
+            "SELECT id FROM file_groups WHERE name = ?",
+            params![name],
+            |row| row.get(0),
+        )?;
+        Ok(id)
+    }
+
+    pub fn get_or_create_log_source(&self, path: &str, file_group_id: i64) -> Result<LogSource, StorageError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO log_sources (file_path, file_group_id) VALUES (?, ?)",
+            params![path, file_group_id],
         )?;
 
         let mut stmt = self.conn.prepare("SELECT id, file_path, last_processed_position, file_hash FROM log_sources WHERE file_path = ?")?;
@@ -121,34 +145,39 @@ impl Storage {
         &self,
         limit: usize,
         filter: Option<&[String]>,
-    ) -> Result<Vec<(i64, String, i64)>, StorageError> {
-        let (sql, bind_values) = match filter {
-            Some(terms) if !terms.is_empty() => {
-                let conditions: Vec<String> = terms.iter()
-                    .map(|_| "template LIKE ?".to_string())
+        group_filter: Option<&[String]>,
+    ) -> Result<Vec<(i64, String, i64, String)>, StorageError> {
+        let mut conditions = vec!["p.occurrence_count > 0".to_string()];
+        let mut bind_values: Vec<String> = Vec::new();
+
+        if let Some(terms) = filter {
+            if !terms.is_empty() {
+                let like_conds: Vec<String> = terms.iter()
+                    .map(|_| "p.template LIKE ?".to_string())
                     .collect();
-                let where_clause = conditions.join(" OR ");
-                let sql = format!(
-                    "SELECT id, template, occurrence_count FROM patterns \
-                     WHERE occurrence_count > 0 AND ({}) \
-                     ORDER BY occurrence_count DESC LIMIT ?",
-                    where_clause
-                );
-                let values: Vec<String> = terms.iter()
-                    .map(|t| format!("%{}%", t))
-                    .collect();
-                (sql, values)
+                conditions.push(format!("({})", like_conds.join(" OR ")));
+                bind_values.extend(terms.iter().map(|t| format!("%{}%", t)));
             }
-            _ => {
-                let sql = "SELECT id, template, occurrence_count FROM patterns \
-                           WHERE occurrence_count > 0 \
-                           ORDER BY occurrence_count DESC LIMIT ?".to_string();
-                (sql, Vec::new())
+        }
+
+        if let Some(groups) = group_filter {
+            if !groups.is_empty() {
+                let placeholders: Vec<String> = groups.iter().map(|_| "?".to_string()).collect();
+                conditions.push(format!("fg.name IN ({})", placeholders.join(", ")));
+                bind_values.extend(groups.iter().cloned());
             }
-        };
+        }
+
+        let sql = format!(
+            "SELECT p.id, p.template, p.occurrence_count, fg.name \
+             FROM patterns p \
+             JOIN file_groups fg ON p.file_group_id = fg.id \
+             WHERE {} \
+             ORDER BY p.occurrence_count DESC LIMIT ?",
+            conditions.join(" AND ")
+        );
 
         let mut stmt = self.conn.prepare(&sql)?;
-        let _param_count = bind_values.len();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = bind_values
             .iter()
             .map(|v| Box::new(v.clone()) as Box<dyn rusqlite::types::ToSql>)
@@ -160,7 +189,7 @@ impl Storage {
             .collect();
 
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?;
         let mut results = Vec::new();
         for row in rows { results.push(row?); }
@@ -171,21 +200,22 @@ impl Storage {
         &self,
         pattern_id: i64,
         limit: usize,
-    ) -> Result<Vec<String>, StorageError> {
+    ) -> Result<Vec<(String, String)>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "SELECT variables FROM occurrences
-             WHERE pattern_id = ? AND variables IS NOT NULL AND variables != ''
+            "SELECT o.variables, ls.file_path FROM occurrences o
+             JOIN log_sources ls ON o.log_source_id = ls.id
+             WHERE o.pattern_id = ? AND o.variables IS NOT NULL AND o.variables != ''
              LIMIT ?",
         )?;
         let rows = stmt.query_map(params![pattern_id, limit as i64], |row| {
-            row.get::<_, String>(0)
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         let mut results = Vec::new();
         for row in rows { results.push(row?); }
         Ok(results)
     }
 
-    pub fn get_report_summary(&self) -> Result<(i64, i64, Vec<String>), StorageError> {
+    pub fn get_report_summary(&self) -> Result<(i64, i64, Vec<String>, Vec<(String, i64)>), StorageError> {
         let pattern_count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM patterns", [], |row| row.get(0),
         )?;
@@ -196,7 +226,19 @@ impl Storage {
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut sources = Vec::new();
         for row in rows { sources.push(row?); }
-        Ok((pattern_count, total_occurrences, sources))
+
+        let mut stmt = self.conn.prepare(
+            "SELECT fg.name, COUNT(p.id) FROM file_groups fg \
+             LEFT JOIN patterns p ON p.file_group_id = fg.id AND p.occurrence_count > 0 \
+             GROUP BY fg.id ORDER BY fg.name"
+        )?;
+        let group_rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut groups = Vec::new();
+        for row in group_rows { groups.push(row?); }
+
+        Ok((pattern_count, total_occurrences, sources, groups))
     }
 }
 
@@ -212,9 +254,13 @@ mod tests {
         let path_str = db_path.to_str().unwrap();
 
         let storage = Storage::open(path_str).unwrap();
-        let _source = storage.get_or_create_log_source("test.log").unwrap();
+        let group_id = storage.get_or_create_file_group("test.log").unwrap();
+        let _source = storage.get_or_create_log_source("test.log", group_id).unwrap();
         
-        storage.conn.execute("INSERT INTO patterns (template, occurrence_count) VALUES ('User <*> logged in', 42)", []).unwrap();
+        storage.conn.execute(
+            "INSERT INTO patterns (file_group_id, template, occurrence_count) VALUES (?, 'User <*> logged in', 42)",
+            params![group_id],
+        ).unwrap();
         let pattern_id = storage.conn.last_insert_rowid();
         storage.conn.execute("INSERT INTO patterns_fts (pattern_id, template) VALUES (?, 'User <*> logged in')", params![pattern_id]).unwrap();
 
