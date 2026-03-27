@@ -668,6 +668,27 @@ fn derive_group_name(file_path: &str) -> String {
         cleaned.pop();
     }
 
+    // Strip trailing digits from segments (e.g., test2.log → test.log, server8080.log → server.log)
+    // Only strip if it leaves a non-empty prefix in the segment.
+    let segments: Vec<&str> = cleaned.split('.').collect();
+    let stripped: Vec<String> = segments.iter().map(|seg| {
+        let trimmed = seg.trim_end_matches(|c: char| c.is_ascii_digit());
+        if trimmed.is_empty() {
+            seg.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }).collect();
+    // Dedup consecutive identical segments that arose from stripping
+    let mut deduped = Vec::with_capacity(stripped.len());
+    for seg in &stripped {
+        if deduped.last().map(|s: &String| s == seg).unwrap_or(false) {
+            continue;
+        }
+        deduped.push(seg.clone());
+    }
+    let cleaned = deduped.join(".");
+
     if cleaned.is_empty() { filename.to_string() } else { cleaned }
 }
 
@@ -739,7 +760,16 @@ mod tests {
 
     #[test]
     fn test_derive_group_name_preserves_non_date_numbers() {
-        assert_eq!(derive_group_name("server8080.log"), "server8080.log");
+        // Trailing digits on segments are stripped as rotation/instance numbers
+        assert_eq!(derive_group_name("server8080.log"), "server.log");
+    }
+
+    #[test]
+    fn test_derive_group_name_rotation_suffix() {
+        assert_eq!(derive_group_name("test2.log"), "test.log");
+        assert_eq!(derive_group_name("test.log"), "test.log");
+        assert_eq!(derive_group_name("app1.log"), "app.log");
+        assert_eq!(derive_group_name("app8080.log"), "app.log");
     }
 
     #[test]
