@@ -70,7 +70,8 @@ impl Storage {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 log_source_id INTEGER NOT NULL,
                 pattern_id INTEGER NOT NULL,
-                timestamp INTEGER NOT NULL,
+                byte_offset INTEGER NOT NULL,
+                entry_timestamp INTEGER,
                 variables TEXT,
                 FOREIGN KEY(log_source_id) REFERENCES log_sources(id),
                 FOREIGN KEY(pattern_id) REFERENCES patterns(id)
@@ -83,6 +84,7 @@ impl Storage {
 
             CREATE INDEX IF NOT EXISTS idx_occ_pattern ON occurrences(pattern_id);
             CREATE INDEX IF NOT EXISTS idx_occ_source ON occurrences(log_source_id);
+            CREATE INDEX IF NOT EXISTS idx_occ_entry_ts ON occurrences(entry_timestamp);
             CREATE INDEX IF NOT EXISTS idx_patterns_group ON patterns(file_group_id);
             ",
         )?;

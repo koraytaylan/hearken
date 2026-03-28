@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use hearken_core::{LogReader, LogTemplate, tokenize};
+use hearken_core::{LogReader, LogTemplate, extract_timestamp, tokenize};
 use hearken_ml::{LogParser, template_similarity};
 use hearken_storage::Storage;
 use rayon::prelude::*;
@@ -610,18 +610,19 @@ fn process_file(
         {
             let source_id = source.id.unwrap();
             let mut occ_stmt = tx.prepare_cached(
-                "INSERT INTO occurrences (log_source_id, pattern_id, timestamp, variables) VALUES (?, ?, ?, ?)"
+                "INSERT INTO occurrences (log_source_id, pattern_id, byte_offset, entry_timestamp, variables) VALUES (?, ?, ?, ?, ?)"
             )?;
             for &(entry_idx, template_idx) in &occurrence_buffer {
                 if let Some(&pattern_id) = pattern_id_cache.get(&template_idx) {
                     let pos = entries[entry_idx].start_pos as i64;
+                    let entry_ts = extract_timestamp(entries[entry_idx].primary_line);
                     let tmpl_tokens = &parser.templates[template_idx].tokens;
                     let entry_tokens = &parallel_results[entry_idx].0;
                     let variables: String = tmpl_tokens.iter().zip(entry_tokens.iter())
                         .filter_map(|(t, e)| if *t == "<*>" { Some(*e) } else { None })
                         .collect::<Vec<_>>()
                         .join("\t");
-                    occ_stmt.execute(rusqlite::params![source_id, pattern_id, pos, variables])?;
+                    occ_stmt.execute(rusqlite::params![source_id, pattern_id, pos, entry_ts, variables])?;
                 }
             }
         }
