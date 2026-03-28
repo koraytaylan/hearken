@@ -7,11 +7,17 @@ Hearken is a high-performance, unsupervised log analysis tool written in Rust. I
 ## Features
 
 - **Extreme Efficiency:** Built in Rust with memory-mapped file I/O (`memmap2`) for processing multi-gigabyte log files (16 GB+) with minimal overhead. Release builds use LTO and single codegen unit for maximum throughput.
-- **Multi-File Processing with File Groups:** Process multiple log files at once with `hearken-cli process ~/logs/*.log`. Files are automatically grouped by their base name (stripping dates and numeric suffixes), and each group gets its own independent pattern discovery tree.
+- **Multi-File Processing with File Groups:** Process multiple log files at once with `hearken-cli process ~/logs/*.log`. Files are automatically grouped by their base name (stripping dates and numeric suffixes), and each group gets its own independent pattern discovery tree. Multiple groups are processed in parallel threads.
 - **Unsupervised Pattern Recognition:** Uses a [Drain](https://jiemingzhu.github.io/pub/pjhe_icws2017.pdf)-inspired prefix tree algorithm to automatically discover log templates. No regex, no training, no prior knowledge of the log format required.
 - **Multi-Line Entry Detection:** Automatically learns the structural format of log entries from a sample and groups continuation lines (stack traces, multi-line messages) with their parent entry — without any hardcoded patterns. Stack trace content is included in the pattern token stream so recurring exception shapes are discovered as first-class patterns.
 - **Full-Text Search:** Integrated SQLite FTS5 index for fast searching across discovered patterns.
-- **HTML Report Generation:** Generates a single self-contained HTML file with searchable/sortable pattern tables, file group filtering, sample occurrences with source file provenance, and copy-to-clipboard for Jira ticket creation — no server required, works fully offline.
+- **HTML Report Generation:** Generates a single self-contained HTML file with searchable/sortable pattern tables, file group filtering, inline sparkline trends, interactive timeline chart, pattern tagging, sample occurrences with source file provenance, and copy-to-clipboard — no server required, works fully offline.
+- **Export:** Export patterns as JSON or CSV with filtering and sampling options.
+- **Diff Mode:** Compare two databases to find new, resolved, and changed patterns between runs.
+- **Anomaly Detection:** Flag single-source patterns and statistical outliers (>3σ) with anomaly scoring.
+- **Pattern Deduplication:** Find near-duplicate patterns within groups using template similarity clustering.
+- **Database Statistics:** Quick summary of patterns, occurrences, file groups, and database sizes.
+- **Pattern Tagging:** Tag patterns in the report UI with persistence via sidecar JSON files.
 - **Resume Capability:** Tracks the last processed byte position per file, so interrupted runs pick up exactly where they left off.
 - **100% Offline:** Designed for isolated environments; no internet connection required.
 
@@ -73,11 +79,76 @@ Each group gets its own independent Drain tree, so patterns from `error.log` and
 # Filter by file group
 ./hearken-cli report --group error.log,access.log
 
+# Load pattern tags from a JSON file
+./hearken-cli report --tags-file my-tags.json
+
 # Report from a specific database
 ./hearken-cli -d my_analysis.db report
 ```
 
-The report is a single self-contained HTML file (all CSS/JS/data inline) that opens in any browser and works offline. It includes searchable/sortable pattern tables, file group column and filter dropdown, expandable details with reconstructed sample occurrences (showing source file provenance), and copy-to-clipboard for Jira ticket creation.
+The report is a single self-contained HTML file (all CSS/JS/data inline) that opens in any browser and works offline. It includes:
+- Searchable/sortable pattern table with file group filtering
+- Inline SVG sparklines showing per-source occurrence distribution
+- Interactive timeline chart (stacked bars of top patterns across source files)
+- Expandable details with reconstructed sample occurrences and source provenance
+- Pattern tagging: add/remove tags in the UI, filter by tag, export tags as JSON
+- Copy-to-clipboard for Jira ticket creation
+
+### Database Statistics
+
+```bash
+# Show pattern count, occurrences, file groups, source files, DB sizes
+./hearken-cli stats
+```
+
+### Export Patterns
+
+```bash
+# Export as JSON (to stdout)
+./hearken-cli export
+
+# Export as CSV to a file
+./hearken-cli export --format csv --output patterns.csv
+
+# Filter and limit
+./hearken-cli export --format json --top 100 --filter '*ERROR*' --samples 3
+```
+
+### Diff Two Databases
+
+```bash
+# Compare before/after databases to find new, resolved, and changed patterns
+./hearken-cli diff before.db after.db
+
+# JSON output for scripting
+./hearken-cli diff before.db after.db --format json
+```
+
+### Pattern Deduplication
+
+```bash
+# Find near-duplicate patterns (default threshold: 0.95)
+./hearken-cli dedup
+
+# Adjust similarity threshold
+./hearken-cli dedup --threshold 0.90
+
+# Check a specific group, JSON output
+./hearken-cli dedup --group error.log --format json
+```
+
+### Anomaly Detection
+
+```bash
+# Detect anomalous patterns (single-source or >3σ outliers)
+./hearken-cli anomalies
+
+# Limit results, filter by group
+./hearken-cli anomalies --top 20 --group error.log
+
+# JSON output
+./hearken-cli anomalies --format json
+```
 
 ### Clean State and Reprocess
 
@@ -128,12 +199,26 @@ Hearken is a Cargo workspace with four crates:
 
 | Crate | Role |
 |---|---|
-| `hearken-cli` | CLI interface, orchestration, multi-line grouping, parallel/sequential pipeline |
+| `hearken-cli` | CLI interface, orchestration, multi-line grouping, parallel pipeline, report/export/diff/dedup/anomalies commands |
 | `hearken-core` | Data models (`LogSource`, `LogTemplate`, `LogOccurrence`), mmap-based `LogReader` |
 | `hearken-ml` | Drain prefix tree, template matching, similarity calculation, variable extraction |
-| `hearken-storage` | SQLite persistence, schema management, FTS5 search, performance pragmas |
+| `hearken-storage` | SQLite persistence, schema management, FTS5 search, trend queries, performance pragmas |
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed internals.
+
+## Roadmap
+
+- [x] **Input Validation** — Validate file paths, threshold range, skip unreadable files with warnings
+- [x] **Integration Tests** — End-to-end tests covering the full processing pipeline
+- [x] **Stats Command** — Database summary: pattern/occurrence counts, file groups, DB sizes
+- [x] **JSON/CSV Export** — `export` command with `--format json|csv`, filtering, and sampling options
+- [x] **Diff Mode** — `diff` command to compare two databases, find new/resolved/changed patterns
+- [x] **Trend Tracking** — Per-source occurrence distribution with inline SVG sparklines in report
+- [x] **Pattern Deduplication** — `dedup` command using template similarity clustering with Union-Find
+- [x] **Anomaly Detection** — `anomalies` command flagging single-source and z-score outliers
+- [x] **Parallel Group Processing** — Process multiple file groups concurrently with per-thread DB connections
+- [x] **Timeline Visualization** — Interactive stacked bar chart in report showing pattern distribution across sources
+- [x] **Pattern Tagging** — Tag patterns in report UI, filter by tag, persist via sidecar JSON
 
 ## License
 
