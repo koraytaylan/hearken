@@ -1,5 +1,5 @@
 use hearken_core::LogSource;
-use rusqlite::{params, Connection, OpenFlags, Result as RusqliteResult};
+use rusqlite::{Connection, OpenFlags, Result as RusqliteResult, params};
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -31,10 +31,13 @@ impl Storage {
              PRAGMA cache_size = -1000000;
              PRAGMA temp_store = MEMORY;
              PRAGMA page_size = 16384;
-             PRAGMA busy_timeout = 30000;"
+             PRAGMA busy_timeout = 30000;",
         )?;
 
-        let storage = Self { conn, path: path.to_string() };
+        let storage = Self {
+            conn,
+            path: path.to_string(),
+        };
         storage.init_schema()?;
 
         Ok(storage)
@@ -116,7 +119,11 @@ impl Storage {
         Ok(id)
     }
 
-    pub fn get_or_create_log_source(&self, path: &str, file_group_id: i64) -> Result<LogSource, StorageError> {
+    pub fn get_or_create_log_source(
+        &self,
+        path: &str,
+        file_group_id: i64,
+    ) -> Result<LogSource, StorageError> {
         self.conn.execute(
             "INSERT OR IGNORE INTO log_sources (file_path, file_group_id) VALUES (?, ?)",
             params![path, file_group_id],
@@ -136,10 +143,14 @@ impl Storage {
     }
 
     pub fn search_patterns(&self, query: &str) -> Result<Vec<(i64, String)>, StorageError> {
-        let mut stmt = self.conn.prepare("SELECT pattern_id, template FROM patterns_fts WHERE patterns_fts MATCH ?")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT pattern_id, template FROM patterns_fts WHERE patterns_fts MATCH ?")?;
         let rows = stmt.query_map(params![query], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let mut results = Vec::new();
-        for row in rows { results.push(row?); }
+        for row in rows {
+            results.push(row?);
+        }
         Ok(results)
     }
 
@@ -153,7 +164,9 @@ impl Storage {
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let mut results = Vec::new();
-        for row in rows { results.push(row?); }
+        for row in rows {
+            results.push(row?);
+        }
         Ok(results)
     }
 
@@ -166,22 +179,19 @@ impl Storage {
         let mut conditions = vec!["p.occurrence_count > 0".to_string()];
         let mut bind_values: Vec<String> = Vec::new();
 
-        if let Some(terms) = filter {
-            if !terms.is_empty() {
-                let like_conds: Vec<String> = terms.iter()
-                    .map(|_| "p.template LIKE ?".to_string())
-                    .collect();
-                conditions.push(format!("({})", like_conds.join(" OR ")));
-                bind_values.extend(terms.iter().map(|t| format!("%{}%", t)));
-            }
+        if let Some(terms) = filter.filter(|t| !t.is_empty()) {
+            let like_conds: Vec<String> = terms
+                .iter()
+                .map(|_| "p.template LIKE ?".to_string())
+                .collect();
+            conditions.push(format!("({})", like_conds.join(" OR ")));
+            bind_values.extend(terms.iter().map(|t| format!("%{}%", t)));
         }
 
-        if let Some(groups) = group_filter {
-            if !groups.is_empty() {
-                let placeholders: Vec<String> = groups.iter().map(|_| "?".to_string()).collect();
-                conditions.push(format!("fg.name IN ({})", placeholders.join(", ")));
-                bind_values.extend(groups.iter().cloned());
-            }
+        if let Some(groups) = group_filter.filter(|g| !g.is_empty()) {
+            let placeholders: Vec<String> = groups.iter().map(|_| "?".to_string()).collect();
+            conditions.push(format!("fg.name IN ({})", placeholders.join(", ")));
+            bind_values.extend(groups.iter().cloned());
         }
 
         let sql = format!(
@@ -200,15 +210,16 @@ impl Storage {
             .collect();
         params_vec.push(Box::new(limit as i64));
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter()
-            .map(|p| p.as_ref())
-            .collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
 
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?;
         let mut results = Vec::new();
-        for row in rows { results.push(row?); }
+        for row in rows {
+            results.push(row?);
+        }
         Ok(results)
     }
 
@@ -227,32 +238,43 @@ impl Storage {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         let mut results = Vec::new();
-        for row in rows { results.push(row?); }
+        for row in rows {
+            results.push(row?);
+        }
         Ok(results)
     }
 
-    pub fn get_report_summary(&self) -> Result<(i64, i64, Vec<String>, Vec<(String, i64)>), StorageError> {
-        let pattern_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM patterns", [], |row| row.get(0),
-        )?;
+    #[allow(clippy::type_complexity)]
+    pub fn get_report_summary(
+        &self,
+    ) -> Result<(i64, i64, Vec<String>, Vec<(String, i64)>), StorageError> {
+        let pattern_count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM patterns", [], |row| row.get(0))?;
         let total_occurrences: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(occurrence_count), 0) FROM patterns", [], |row| row.get(0),
+            "SELECT COALESCE(SUM(occurrence_count), 0) FROM patterns",
+            [],
+            |row| row.get(0),
         )?;
         let mut stmt = self.conn.prepare("SELECT file_path FROM log_sources")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut sources = Vec::new();
-        for row in rows { sources.push(row?); }
+        for row in rows {
+            sources.push(row?);
+        }
 
         let mut stmt = self.conn.prepare(
             "SELECT fg.name, COUNT(p.id) FROM file_groups fg \
              LEFT JOIN patterns p ON p.file_group_id = fg.id AND p.occurrence_count > 0 \
-             GROUP BY fg.id ORDER BY fg.name"
+             GROUP BY fg.id ORDER BY fg.name",
         )?;
         let group_rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
         let mut groups = Vec::new();
-        for row in group_rows { groups.push(row?); }
+        for row in group_rows {
+            groups.push(row?);
+        }
 
         Ok((pattern_count, total_occurrences, sources, groups))
     }
@@ -280,14 +302,18 @@ impl Storage {
                 placeholders.join(", ")
             );
             let mut stmt = self.conn.prepare(&sql)?;
-            let params: Vec<Box<dyn rusqlite::types::ToSql>> = chunk.iter()
+            let params: Vec<Box<dyn rusqlite::types::ToSql>> = chunk
+                .iter()
                 .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
                 .collect();
-            let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter()
-                .map(|p| p.as_ref())
-                .collect();
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
             let rows = stmt.query_map(params_refs.as_slice(), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
             })?;
             for row in rows {
                 let (pid, path, cnt) = row?;
@@ -307,28 +333,34 @@ impl Storage {
         &self,
         group_filter: Option<&str>,
     ) -> Result<Vec<(i64, String, i64, String)>, StorageError> {
-        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(g) = group_filter {
-            (
-                "SELECT p.id, p.template, p.occurrence_count, fg.name \
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(g) = group_filter {
+                (
+                    "SELECT p.id, p.template, p.occurrence_count, fg.name \
                  FROM patterns p JOIN file_groups fg ON p.file_group_id = fg.id \
-                 WHERE fg.name = ? ORDER BY p.occurrence_count DESC".to_string(),
-                vec![Box::new(g.to_string()) as Box<dyn rusqlite::types::ToSql>],
-            )
-        } else {
-            (
-                "SELECT p.id, p.template, p.occurrence_count, fg.name \
+                 WHERE fg.name = ? ORDER BY p.occurrence_count DESC"
+                        .to_string(),
+                    vec![Box::new(g.to_string()) as Box<dyn rusqlite::types::ToSql>],
+                )
+            } else {
+                (
+                    "SELECT p.id, p.template, p.occurrence_count, fg.name \
                  FROM patterns p JOIN file_groups fg ON p.file_group_id = fg.id \
-                 ORDER BY fg.name, p.occurrence_count DESC".to_string(),
-                vec![],
-            )
-        };
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+                 ORDER BY fg.name, p.occurrence_count DESC"
+                        .to_string(),
+                    vec![],
+                )
+            };
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?;
         let mut results = Vec::new();
-        for row in rows { results.push(row?); }
+        for row in rows {
+            results.push(row?);
+        }
         Ok(results)
     }
     /// Returns true if any occurrences have a non-NULL entry_timestamp.
@@ -356,7 +388,7 @@ impl Storage {
         let fmt = match bucket {
             "hour" => "%Y-%m-%d %H:00".to_string(),
             "day" => "%Y-%m-%d".to_string(),
-            "auto" | _ => {
+            _ => {
                 let row: (Option<i64>, Option<i64>) = self.conn.query_row(
                     "SELECT MIN(entry_timestamp), MAX(entry_timestamp) FROM occurrences WHERE entry_timestamp IS NOT NULL",
                     [],
@@ -418,13 +450,15 @@ impl Storage {
              JOIN patterns p ON o.pattern_id = p.id
              JOIN file_groups fg ON p.file_group_id = fg.id
              WHERE o.entry_timestamp IS NOT NULL AND p.occurrence_count >= ?
-             ORDER BY o.entry_timestamp"
+             ORDER BY o.entry_timestamp",
         )?;
         let rows = stmt.query_map(rusqlite::params![min_count], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?;
         let mut results = Vec::new();
-        for row in rows { results.push(row?); }
+        for row in rows {
+            results.push(row?);
+        }
         Ok(results)
     }
 
@@ -433,13 +467,16 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT fg.name, COUNT(ls.id) FROM log_sources ls \
              JOIN file_groups fg ON ls.file_group_id = fg.id \
-             GROUP BY fg.name"
+             GROUP BY fg.name",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
         })?;
         let mut result = HashMap::new();
-        for row in rows { let (g, c) = row?; result.insert(g, c); }
+        for row in rows {
+            let (g, c) = row?;
+            result.insert(g, c);
+        }
         Ok(result)
     }
 
@@ -450,7 +487,9 @@ impl Storage {
         group_filter: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(i64, String, String, String)>, StorageError> {
-        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(g) = group_filter {
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(g) =
+            group_filter
+        {
             (
                 "SELECT o.pattern_id, fg.name, substr(p.template, 1, 120), o.variables
                  FROM occurrences o
@@ -477,34 +516,39 @@ impl Storage {
                 vec![Box::new(limit as i64) as Box<dyn rusqlite::types::ToSql>],
             )
         };
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?;
         let mut results = Vec::new();
-        for row in rows { results.push(row?); }
+        for row in rows {
+            results.push(row?);
+        }
         Ok(results)
     }
     // --- Tag management methods ---
 
     /// Get all tags for a pattern.
     pub fn get_tags(&self, pattern_id: i64) -> Result<Vec<String>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT tag FROM tags WHERE pattern_id = ? ORDER BY tag"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tag FROM tags WHERE pattern_id = ? ORDER BY tag")?;
         let rows = stmt.query_map(params![pattern_id], |row| row.get::<_, String>(0))?;
         let mut results = Vec::new();
-        for row in rows { results.push(row?); }
+        for row in rows {
+            results.push(row?);
+        }
         Ok(results)
     }
 
     /// Get tags for all patterns that have any tags.
     /// Returns: HashMap<pattern_id, Vec<tag>>
     pub fn get_all_tags(&self) -> Result<HashMap<i64, Vec<String>>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT pattern_id, tag FROM tags ORDER BY pattern_id, tag"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT pattern_id, tag FROM tags ORDER BY pattern_id, tag")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -518,10 +562,11 @@ impl Storage {
 
     /// Set tags for a pattern (replaces all existing tags).
     pub fn set_tags(&self, pattern_id: i64, tags: &[String]) -> Result<(), StorageError> {
-        self.conn.execute("DELETE FROM tags WHERE pattern_id = ?", params![pattern_id])?;
-        let mut stmt = self.conn.prepare(
-            "INSERT OR IGNORE INTO tags (pattern_id, tag) VALUES (?, ?)"
-        )?;
+        self.conn
+            .execute("DELETE FROM tags WHERE pattern_id = ?", params![pattern_id])?;
+        let mut stmt = self
+            .conn
+            .prepare("INSERT OR IGNORE INTO tags (pattern_id, tag) VALUES (?, ?)")?;
         for tag in tags {
             stmt.execute(params![pattern_id, tag])?;
         }
@@ -560,14 +605,22 @@ mod tests {
 
         let storage = Storage::open(path_str).unwrap();
         let group_id = storage.get_or_create_file_group("test.log").unwrap();
-        let _source = storage.get_or_create_log_source("test.log", group_id).unwrap();
-        
+        let _source = storage
+            .get_or_create_log_source("test.log", group_id)
+            .unwrap();
+
         storage.conn.execute(
             "INSERT INTO patterns (file_group_id, template, occurrence_count) VALUES (?, 'User <*> logged in', 42)",
             params![group_id],
         ).unwrap();
         let pattern_id = storage.conn.last_insert_rowid();
-        storage.conn.execute("INSERT INTO patterns_fts (pattern_id, template) VALUES (?, 'User <*> logged in')", params![pattern_id]).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO patterns_fts (pattern_id, template) VALUES (?, 'User <*> logged in')",
+                params![pattern_id],
+            )
+            .unwrap();
 
         let search_results = storage.search_patterns("User").unwrap();
         assert_eq!(search_results.len(), 1);

@@ -1,9 +1,9 @@
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
+use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::fs::File;
 use thiserror::Error;
-use memmap2::Mmap;
 
 #[derive(Error, Debug)]
 pub enum CoreError {
@@ -79,12 +79,14 @@ thread_local! {
 }
 
 const SYSLOG_MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
 fn parse_syslog_month(s: &str) -> Option<u32> {
-    SYSLOG_MONTHS.iter().position(|&m| m == s).map(|i| i as u32 + 1)
+    SYSLOG_MONTHS
+        .iter()
+        .position(|&m| m == s)
+        .map(|i| i as u32 + 1)
 }
 
 /// Attempts to extract a Unix timestamp (seconds) from the beginning of a log line.
@@ -128,7 +130,9 @@ fn try_iso8601_t(line: &str) -> Option<i64> {
     // Find the end of the timestamp portion
     let ts_part = &line[..line.len().min(35)];
     // Try parsing with chrono's DateTime parser which handles Z, +00:00, fractional seconds
-    if let Ok(dt) = DateTime::parse_from_rfc3339(ts_part.split_whitespace().next().unwrap_or(ts_part)) {
+    if let Ok(dt) =
+        DateTime::parse_from_rfc3339(ts_part.split_whitespace().next().unwrap_or(ts_part))
+    {
         return Some(dt.timestamp());
     }
     // Try without timezone (assume UTC)
@@ -142,7 +146,11 @@ fn try_iso8601_t(line: &str) -> Option<i64> {
 
 // ISO 8601 with space and comma fraction: 2026-01-15 08:00:00,123
 fn try_iso8601_space_comma(line: &str) -> Option<i64> {
-    if line.len() < 19 || line.as_bytes()[4] != b'-' || line.as_bytes()[10] != b' ' || line.as_bytes()[13] != b':' {
+    if line.len() < 19
+        || line.as_bytes()[4] != b'-'
+        || line.as_bytes()[10] != b' '
+        || line.as_bytes()[13] != b':'
+    {
         return None;
     }
     // Replace comma with dot for chrono parsing
@@ -159,13 +167,19 @@ fn try_iso8601_space_comma(line: &str) -> Option<i64> {
 
 // ISO 8601 with space and dot fraction: 2026-01-15 08:00:00.123
 fn try_iso8601_space_dot(line: &str) -> Option<i64> {
-    if line.len() < 19 || line.as_bytes()[4] != b'-' || line.as_bytes()[10] != b' ' || line.as_bytes()[13] != b':' {
+    if line.len() < 19
+        || line.as_bytes()[4] != b'-'
+        || line.as_bytes()[10] != b' '
+        || line.as_bytes()[13] != b':'
+    {
         return None;
     }
     let end = line.len().min(23);
     let candidate = &line[..end];
     NaiveDateTime::parse_from_str(candidate, "%Y-%m-%d %H:%M:%S%.f")
-        .or_else(|_| NaiveDateTime::parse_from_str(&line[..line.len().min(19)], "%Y-%m-%d %H:%M:%S"))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(&line[..line.len().min(19)], "%Y-%m-%d %H:%M:%S")
+        })
         .ok()
         .map(|ndt| ndt.and_utc().timestamp())
 }
@@ -241,7 +255,7 @@ fn try_unix_epoch(line: &str) -> Option<i64> {
     }
     let epoch: i64 = line[..10].parse().ok()?;
     // Sanity: between 2000-01-01 and 2100-01-01
-    if epoch >= 946_684_800 && epoch <= 4_102_444_800 {
+    if (946_684_800..=4_102_444_800).contains(&epoch) {
         Some(epoch)
     } else {
         None
@@ -258,44 +272,48 @@ impl LogReader {
         let mmap = unsafe { Mmap::map(&file)? };
         #[cfg(unix)]
         mmap.advise(memmap2::Advice::Sequential)?;
-        Ok(Self {
-            mmap,
-        })
+        Ok(Self { mmap })
     }
 
     /// Absolute fastest zero-copy batch reading using memory mapping.
     /// Returns (start_pos, truncated_line_content, next_line_start_pos)
-    pub fn read_batch(&self, start_pos: u64, batch_size: usize) -> Result<Vec<(u64, &str, u64)>, CoreError> {
+    pub fn read_batch(
+        &self,
+        start_pos: u64,
+        batch_size: usize,
+    ) -> Result<Vec<(u64, &str, u64)>, CoreError> {
         if start_pos >= self.mmap.len() as u64 {
             return Ok(vec![]);
         }
 
         let mut lines = Vec::with_capacity(batch_size);
         let content = &self.mmap[start_pos as usize..];
-        
+
         let mut current_offset = 0;
         for _ in 0..batch_size {
-            if current_offset >= content.len() { break; }
-            
+            if current_offset >= content.len() {
+                break;
+            }
+
             let remaining = &content[current_offset..];
             match remaining.iter().position(|&b| b == b'\n') {
                 Some(pos) => {
                     let mut line_bytes = &remaining[..pos];
-                    
+
                     // Strip CR if present
                     if line_bytes.last() == Some(&b'\r') {
                         line_bytes = &line_bytes[..line_bytes.len() - 1];
                     }
-                    
+
                     // Fast byte-level truncation
                     if line_bytes.len() > 64 * 1024 {
                         line_bytes = &line_bytes[..64 * 1024];
                     }
-                    
-                    // Safe, zero-allocation UTF-8 conversion. 
+
+                    // Safe, zero-allocation UTF-8 conversion.
                     // If it fails (e.g., binary dump or cut in middle of multibyte char), we just get ""
                     let line = std::str::from_utf8(line_bytes).unwrap_or("");
-                    
+
                     let next_pos = start_pos + current_offset as u64 + pos as u64 + 1;
                     lines.push((start_pos + current_offset as u64, line, next_pos));
                     current_offset += pos + 1;
@@ -308,7 +326,7 @@ impl LogReader {
                     if line_bytes.len() > 64 * 1024 {
                         line_bytes = &line_bytes[..64 * 1024];
                     }
-                    
+
                     let line = std::str::from_utf8(line_bytes).unwrap_or("");
                     let next_pos = start_pos + content.len() as u64;
                     lines.push((start_pos + current_offset as u64, line, next_pos));
@@ -316,12 +334,16 @@ impl LogReader {
                 }
             }
         }
-        
+
         Ok(lines)
     }
 
     pub fn len(&self) -> u64 {
         self.mmap.len() as u64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.mmap.is_empty()
     }
 }
 
@@ -335,18 +357,38 @@ mod tests {
     fn test_tokenize_keeps_parens_together() {
         // Parenthesised token with internal space stays as one token
         let tokens = tokenize("\tat com.example.reflect.Accessor.invoke0(Native Method)");
-        assert_eq!(tokens, vec!["at", "com.example.reflect.Accessor.invoke0(Native Method)"]);
+        assert_eq!(
+            tokens,
+            vec!["at", "com.example.reflect.Accessor.invoke0(Native Method)"]
+        );
 
         let tokens = tokenize("\tat com.example.proxy.GeneratedAccessor42.invoke(Unknown Source)");
-        assert_eq!(tokens, vec!["at", "com.example.proxy.GeneratedAccessor42.invoke(Unknown Source)"]);
+        assert_eq!(
+            tokens,
+            vec![
+                "at",
+                "com.example.proxy.GeneratedAccessor42.invoke(Unknown Source)"
+            ]
+        );
 
         // Normal frame without internal spaces — no change
-        let tokens = tokenize("\tat com.example.app.Widget.process(Widget.java:538) [module:2.3.1]");
-        assert_eq!(tokens, vec!["at", "com.example.app.Widget.process(Widget.java:538)", "[module:2.3.1]"]);
+        let tokens =
+            tokenize("\tat com.example.app.Widget.process(Widget.java:538) [module:2.3.1]");
+        assert_eq!(
+            tokens,
+            vec![
+                "at",
+                "com.example.app.Widget.process(Widget.java:538)",
+                "[module:2.3.1]"
+            ]
+        );
 
         // Bracket-delimited token with spaces stays as one token
         let tokens = tokenize("*INFO* [Background Worker Pool Thread] ServiceImpl");
-        assert_eq!(tokens, vec!["*INFO*", "[Background Worker Pool Thread]", "ServiceImpl"]);
+        assert_eq!(
+            tokens,
+            vec!["*INFO*", "[Background Worker Pool Thread]", "ServiceImpl"]
+        );
     }
 
     #[test]

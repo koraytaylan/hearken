@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if, clippy::too_many_arguments)]
+
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use hearken_core::{LogReader, LogTemplate, extract_timestamp, tokenize};
@@ -335,16 +337,24 @@ fn main() -> Result<()> {
         }
     }
 
-    let storage = Storage::open(&cli.database)
-        .context("Failed to open database")?;
+    let storage = Storage::open(&cli.database).context("Failed to open database")?;
 
     match cli.command {
-        Commands::Process { files, mut threshold, mut batch_size, group_name } => {
+        Commands::Process {
+            files,
+            mut threshold,
+            mut batch_size,
+            group_name,
+        } => {
             if threshold == 0.5 {
-                if let Some(t) = config.threshold { threshold = t; }
+                if let Some(t) = config.threshold {
+                    threshold = t;
+                }
             }
             if batch_size == 500000 {
-                if let Some(b) = config.batch_size { batch_size = b; }
+                if let Some(b) = config.batch_size {
+                    batch_size = b;
+                }
             }
             if !(0.0..=1.0).contains(&threshold) {
                 bail!("--threshold must be between 0.0 and 1.0, got {}", threshold);
@@ -375,7 +385,14 @@ fn main() -> Result<()> {
                 bail!("No valid files to process. All provided paths were invalid or empty.");
             }
             let mut storage = storage;
-            process_files(&mut storage, &valid_files, threshold, batch_size, group_name.as_deref(), &stdin_paths)?;
+            process_files(
+                &mut storage,
+                &valid_files,
+                threshold,
+                batch_size,
+                group_name.as_deref(),
+                &stdin_paths,
+            )?;
         }
         Commands::Search { query } => {
             search_patterns(&storage, &query)?;
@@ -383,15 +400,30 @@ fn main() -> Result<()> {
         Commands::Stats {} => {
             show_stats(&storage, &cli.database)?;
         }
-        Commands::Report { mut output, mut samples, mut top, mut filter, mut group, mut tags_file, include_suppressed, mut bucket } => {
+        Commands::Report {
+            mut output,
+            mut samples,
+            mut top,
+            mut filter,
+            mut group,
+            mut tags_file,
+            include_suppressed,
+            mut bucket,
+        } => {
             if output == "report.html" {
-                if let Some(ref o) = config.report.output { output = o.clone(); }
+                if let Some(ref o) = config.report.output {
+                    output = o.clone();
+                }
             }
             if samples == 5 {
-                if let Some(s) = config.report.samples { samples = s; }
+                if let Some(s) = config.report.samples {
+                    samples = s;
+                }
             }
             if top == 500 {
-                if let Some(t) = config.report.top { top = t; }
+                if let Some(t) = config.report.top {
+                    top = t;
+                }
             }
             if filter.is_none() {
                 filter = config.report.filter.clone();
@@ -403,19 +435,47 @@ fn main() -> Result<()> {
                 tags_file = config.report.tags_file.clone();
             }
             if bucket == "auto" {
-                if let Some(ref b) = config.report.bucket { bucket = b.clone(); }
+                if let Some(ref b) = config.report.bucket {
+                    bucket = b.clone();
+                }
             }
-            generate_report(&storage, &output, samples, top, filter, group, tags_file, include_suppressed, &bucket)?;
+            generate_report(
+                &storage,
+                &output,
+                samples,
+                top,
+                filter,
+                group,
+                tags_file,
+                include_suppressed,
+                &bucket,
+            )?;
         }
-        Commands::Export { mut format, output, mut samples, mut top, mut filter, mut group, mut tags_file, include_suppressed, mut bucket } => {
+        Commands::Export {
+            mut format,
+            output,
+            mut samples,
+            mut top,
+            mut filter,
+            mut group,
+            mut tags_file,
+            include_suppressed,
+            mut bucket,
+        } => {
             if format == "json" {
-                if let Some(ref f) = config.export.format { format = f.clone(); }
+                if let Some(ref f) = config.export.format {
+                    format = f.clone();
+                }
             }
             if samples == 5 {
-                if let Some(s) = config.export.samples { samples = s; }
+                if let Some(s) = config.export.samples {
+                    samples = s;
+                }
             }
             if top == 500 {
-                if let Some(t) = config.export.top { top = t; }
+                if let Some(t) = config.export.top {
+                    top = t;
+                }
             }
             if filter.is_none() {
                 filter = config.export.filter.clone();
@@ -427,24 +487,67 @@ fn main() -> Result<()> {
                 tags_file = config.export.tags_file.clone();
             }
             if bucket == "auto" {
-                if let Some(ref b) = config.export.bucket { bucket = b.clone(); }
+                if let Some(ref b) = config.export.bucket {
+                    bucket = b.clone();
+                }
             }
-            export_patterns(&storage, &format, output.as_deref(), samples, top, filter, group, tags_file.as_deref(), include_suppressed, &bucket)?;
+            export_patterns(
+                &storage,
+                &format,
+                output.as_deref(),
+                samples,
+                top,
+                filter,
+                group,
+                tags_file.as_deref(),
+                include_suppressed,
+                &bucket,
+            )?;
         }
-        Commands::Diff { before, after, format } => {
+        Commands::Diff {
+            before,
+            after,
+            format,
+        } => {
             drop(storage);
             diff_databases(&before, &after, &format)?;
         }
-        Commands::Dedup { threshold, group, format, mode } => {
-            if threshold < 0.0 || threshold > 1.0 {
+        Commands::Dedup {
+            threshold,
+            group,
+            format,
+            mode,
+        } => {
+            if !(0.0..=1.0).contains(&threshold) {
                 bail!("--threshold must be between 0.0 and 1.0");
             }
             find_duplicates(&storage, threshold, group.as_deref(), &format, &mode)?;
         }
-        Commands::Anomalies { group, top, format, tags_file, include_suppressed } => {
-            detect_anomalies(&storage, group.as_deref(), top, &format, tags_file.as_deref(), include_suppressed)?;
+        Commands::Anomalies {
+            group,
+            top,
+            format,
+            tags_file,
+            include_suppressed,
+        } => {
+            detect_anomalies(
+                &storage,
+                group.as_deref(),
+                top,
+                &format,
+                tags_file.as_deref(),
+                include_suppressed,
+            )?;
         }
-        Commands::Check { mut max_anomaly_score, mut max_new_patterns, fail_on_pattern, mut baseline, mut tags_file, group, format } => {
+        Commands::Check {
+            mut max_anomaly_score,
+            mut max_new_patterns,
+            fail_on_pattern,
+            mut baseline,
+            mut tags_file,
+            group,
+            format,
+        } => {
             if max_anomaly_score.is_none() {
                 max_anomaly_score = config.check.max_anomaly_score;
             }
@@ -457,23 +560,59 @@ fn main() -> Result<()> {
             if tags_file.is_none() {
                 tags_file = config.check.tags_file.clone();
             }
-            let passed = run_check(&storage, max_anomaly_score, max_new_patterns, fail_on_pattern, baseline, tags_file.as_deref(), group.as_deref(), &format)?;
+            let passed = run_check(
+                &storage,
+                max_anomaly_score,
+                max_new_patterns,
+                fail_on_pattern,
+                baseline,
+                tags_file.as_deref(),
+                group.as_deref(),
+                &format,
+            )?;
             if !passed {
                 std::process::exit(1);
             }
         }
-        Commands::Correlate { window, top, min_count, format } => {
+        Commands::Correlate {
+            window,
+            top,
+            min_count,
+            format,
+        } => {
             find_correlations(&storage, window, top, min_count, &format)?;
         }
-        Commands::Cluster { min_shared, top, group, pattern_limit, format } => {
-            find_clusters(&storage, min_shared, top, group.as_deref(), pattern_limit, &format)?;
+        Commands::Cluster {
+            min_shared,
+            top,
+            group,
+            pattern_limit,
+            format,
+        } => {
+            find_clusters(
+                &storage,
+                min_shared,
+                top,
+                group.as_deref(),
+                pattern_limit,
+                &format,
+            )?;
         }
-        Commands::Watch { files, mut threshold, mut batch_size, alert_score } => {
+        Commands::Watch {
+            files,
+            mut threshold,
+            mut batch_size,
+            alert_score,
+        } => {
             if threshold == 0.5 {
-                if let Some(t) = config.threshold { threshold = t; }
+                if let Some(t) = config.threshold {
+                    threshold = t;
+                }
             }
             if batch_size == 500000 {
-                if let Some(b) = config.batch_size { batch_size = b; }
+                if let Some(b) = config.batch_size {
+                    batch_size = b;
+                }
             }
             if !(0.0..=1.0).contains(&threshold) {
                 bail!("--threshold must be between 0.0 and 1.0, got {}", threshold);
@@ -483,26 +622,29 @@ fn main() -> Result<()> {
                 bail!("No valid files to watch. All provided paths were invalid or empty.");
             }
             let mut storage = storage;
-            watch_files(&mut storage, &valid_files, threshold, batch_size, alert_score)?;
+            watch_files(
+                &mut storage,
+                &valid_files,
+                threshold,
+                batch_size,
+                alert_score,
+            )?;
         }
-        Commands::Baseline { action } => {
-            match action {
-                BaselineAction::Save { output } => {
-                    save_baseline(&storage, &output)?;
-                }
-                BaselineAction::Compare { baseline, format } => {
-                    drop(storage);
-                    let diff = compute_diff(&baseline, &cli.database)?;
-                    format_diff(&diff, &baseline, &cli.database, &format)?;
-                }
+        Commands::Baseline { action } => match action {
+            BaselineAction::Save { output } => {
+                save_baseline(&storage, &output)?;
             }
-        }
+            BaselineAction::Compare { baseline, format } => {
+                drop(storage);
+                let diff = compute_diff(&baseline, &cli.database)?;
+                format_diff(&diff, &baseline, &cli.database, &format)?;
+            }
+        },
         #[cfg(feature = "web")]
         Commands::Serve { port } => {
             drop(storage);
             let db_path = cli.database.clone();
-            let rt = tokio::runtime::Runtime::new()
-                .context("Failed to create Tokio runtime")?;
+            let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
             rt.block_on(web::run_server(&db_path, port))?;
         }
     }
@@ -529,19 +671,27 @@ fn find_correlations(
     min_count: i64,
     format: &str,
 ) -> Result<()> {
-    println!("Finding correlations (window={}s, min_count={})...", window_secs, min_count);
+    println!(
+        "Finding correlations (window={}s, min_count={})...",
+        window_secs, min_count
+    );
 
     let occurrences = storage.get_timed_occurrences(min_count)?;
     if occurrences.is_empty() {
         println!("No timestamped occurrences found. Process logs with timestamps first.");
         return Ok(());
     }
-    println!("  Analyzing {} timestamped occurrences...", occurrences.len());
+    println!(
+        "  Analyzing {} timestamped occurrences...",
+        occurrences.len()
+    );
 
     // Build pattern metadata lookup: id -> (group, template)
     let mut pattern_meta: HashMap<i64, (String, String)> = HashMap::new();
     for (pid, _, group, tmpl) in &occurrences {
-        pattern_meta.entry(*pid).or_insert_with(|| (group.clone(), tmpl.clone()));
+        pattern_meta
+            .entry(*pid)
+            .or_insert_with(|| (group.clone(), tmpl.clone()));
     }
 
     // Count total occurrences per pattern (for expected rate calculation)
@@ -556,20 +706,33 @@ fn find_correlations(
 
     // Cap analysis to avoid O(n²) blowup
     let max_occurrences = 500_000;
-    let occ_slice = if n > max_occurrences { &occurrences[..max_occurrences] } else { &occurrences[..] };
+    let occ_slice = if n > max_occurrences {
+        &occurrences[..max_occurrences]
+    } else {
+        &occurrences[..]
+    };
     let n = occ_slice.len();
 
     let mut co_occur: HashMap<(i64, i64), Vec<i64>> = HashMap::new();
 
     for i in 0..n {
         let (pid_i, ts_i, group_i, _) = &occ_slice[i];
-        for k in (i + 1)..n {
-            let (pid_k, ts_k, group_k, _) = &occ_slice[k];
-            if *ts_k > ts_i + window { break; }
-            if group_k == group_i { continue; }
-            if pid_k == pid_i { continue; }
+        for (pid_k, ts_k, group_k, _) in &occ_slice[i + 1..] {
+            if *ts_k > ts_i + window {
+                break;
+            }
+            if group_k == group_i {
+                continue;
+            }
+            if pid_k == pid_i {
+                continue;
+            }
 
-            let (a, b) = if pid_i < pid_k { (*pid_i, *pid_k) } else { (*pid_k, *pid_i) };
+            let (a, b) = if pid_i < pid_k {
+                (*pid_i, *pid_k)
+            } else {
+                (*pid_k, *pid_i)
+            };
             let lag = (ts_k - ts_i).abs();
             let lags = co_occur.entry((a, b)).or_default();
             if lags.len() < 10000 {
@@ -579,7 +742,10 @@ fn find_correlations(
     }
 
     if co_occur.is_empty() {
-        println!("No cross-group correlations found within {}s window.", window_secs);
+        println!(
+            "No cross-group correlations found within {}s window.",
+            window_secs
+        );
         return Ok(());
     }
 
@@ -593,7 +759,11 @@ fn find_correlations(
         // Expected co-occurrences by chance: (count_a * count_b * window) / time_span
         let expected = (count_a * count_b * window as f64) / time_span;
         let observed = lags.len() as f64;
-        let confidence = if expected > 0.0 { observed / expected } else { observed };
+        let confidence = if expected > 0.0 {
+            observed / expected
+        } else {
+            observed
+        };
 
         if lags.len() >= 3 && confidence >= 1.5 {
             let (group_a, tmpl_a) = pattern_meta.get(a).cloned().unwrap_or_default();
@@ -625,23 +795,43 @@ fn find_correlations(
     }
 
     if format == "json" {
-        let items: Vec<serde_json::Value> = correlations.iter().map(|c| {
-            serde_json::json!({
-                "pattern_a": {"id": c.pattern_a, "group": c.group_a, "template": c.template_a},
-                "pattern_b": {"id": c.pattern_b, "group": c.group_b, "template": c.template_b},
-                "co_occurrences": c.co_occurrences,
-                "confidence": format!("{:.1}x", c.confidence),
-                "median_lag_secs": c.median_lag_secs,
+        let items: Vec<serde_json::Value> = correlations
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "pattern_a": {"id": c.pattern_a, "group": c.group_a, "template": c.template_a},
+                    "pattern_b": {"id": c.pattern_b, "group": c.group_b, "template": c.template_b},
+                    "co_occurrences": c.co_occurrences,
+                    "confidence": format!("{:.1}x", c.confidence),
+                    "median_lag_secs": c.median_lag_secs,
+                })
             })
-        }).collect();
+            .collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
-        println!("═══ Pattern Correlations (top {}, window={}s) ═══\n", correlations.len(), window_secs);
+        println!(
+            "═══ Pattern Correlations (top {}, window={}s) ═══\n",
+            correlations.len(),
+            window_secs
+        );
         for (i, c) in correlations.iter().enumerate() {
-            println!("  {}. [{:.1}x confidence, {} co-occurrences, median lag: {:.1}s]",
-                i + 1, c.confidence, c.co_occurrences, c.median_lag_secs);
-            let preview_a = if c.template_a.len() > 80 { format!("{}…", &c.template_a[..80]) } else { c.template_a.clone() };
-            let preview_b = if c.template_b.len() > 80 { format!("{}…", &c.template_b[..80]) } else { c.template_b.clone() };
+            println!(
+                "  {}. [{:.1}x confidence, {} co-occurrences, median lag: {:.1}s]",
+                i + 1,
+                c.confidence,
+                c.co_occurrences,
+                c.median_lag_secs
+            );
+            let preview_a = if c.template_a.len() > 80 {
+                format!("{}…", &c.template_a[..80])
+            } else {
+                c.template_a.clone()
+            };
+            let preview_b = if c.template_b.len() > 80 {
+                format!("{}…", &c.template_b[..80])
+            } else {
+                c.template_b.clone()
+            };
             println!("     A [{}]: {}", c.group_a, preview_a);
             println!("     B [{}]: {}\n", c.group_b, preview_b);
         }
@@ -657,9 +847,13 @@ fn token_shape(token: &str) -> String {
     let mut shape = String::with_capacity(16);
     let mut last_class = '\0';
     for c in token.chars().take(20) {
-        let class = if c.is_ascii_digit() { 'd' }
-                    else if c.is_ascii_alphabetic() { 'a' }
-                    else { c };
+        let class = if c.is_ascii_digit() {
+            'd'
+        } else if c.is_ascii_alphabetic() {
+            'a'
+        } else {
+            c
+        };
         if class != last_class {
             shape.push(class);
             last_class = class;
@@ -671,10 +865,15 @@ fn token_shape(token: &str) -> String {
 /// Computes a structural fingerprint from a line's first two tokens.
 /// Returns (has_leading_whitespace, fingerprint_string).
 fn line_prefix_fingerprint(line: &str) -> (bool, String) {
-    let has_leading_ws = line.as_bytes().first().map_or(false, |&b| b == b' ' || b == b'\t');
+    let has_leading_ws = line
+        .as_bytes()
+        .first()
+        .is_some_and(|&b| b == b' ' || b == b'\t');
     let mut fp = String::with_capacity(32);
     for (i, tok) in line.split_whitespace().take(2).enumerate() {
-        if i > 0 { fp.push('|'); }
+        if i > 0 {
+            fp.push('|');
+        }
         fp.push_str(&token_shape(tok));
     }
     (has_leading_ws, fp)
@@ -688,12 +887,16 @@ fn detect_entry_fingerprints(lines: &[(u64, &str, u64)]) -> HashSet<String> {
 
     for (_, line, _) in lines {
         let (has_ws, fp) = line_prefix_fingerprint(line);
-        if has_ws || fp.is_empty() { continue; }
+        if has_ws || fp.is_empty() {
+            continue;
+        }
         total_non_ws += 1;
         *freq.entry(fp).or_insert(0) += 1;
     }
 
-    if total_non_ws == 0 { return HashSet::new(); }
+    if total_non_ws == 0 {
+        return HashSet::new();
+    }
 
     let mut ranked: Vec<(String, usize)> = freq.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1));
@@ -705,7 +908,9 @@ fn detect_entry_fingerprints(lines: &[(u64, &str, u64)]) -> HashSet<String> {
     for (fp, count) in &ranked {
         entry_fps.insert(fp.clone());
         covered += *count;
-        if covered >= threshold { break; }
+        if covered >= threshold {
+            break;
+        }
     }
 
     entry_fps
@@ -713,9 +918,13 @@ fn detect_entry_fingerprints(lines: &[(u64, &str, u64)]) -> HashSet<String> {
 
 /// Checks if a line is an entry start based on auto-detected fingerprints.
 fn is_entry_start(line: &str, entry_fps: &HashSet<String>) -> bool {
-    if entry_fps.is_empty() { return true; } // fallback: every line is an entry
+    if entry_fps.is_empty() {
+        return true;
+    } // fallback: every line is an entry
     let (has_ws, fp) = line_prefix_fingerprint(line);
-    if has_ws { return false; }
+    if has_ws {
+        return false;
+    }
     entry_fps.contains(&fp)
 }
 
@@ -729,8 +938,13 @@ struct GroupedEntry<'a> {
 
 /// Groups raw lines into logical log entries by merging continuation lines
 /// with their parent entry using auto-detected structural fingerprints.
-fn group_entries<'a>(lines: &[(u64, &'a str, u64)], entry_fps: &HashSet<String>) -> Vec<GroupedEntry<'a>> {
-    if lines.is_empty() { return vec![]; }
+fn group_entries<'a>(
+    lines: &[(u64, &'a str, u64)],
+    entry_fps: &HashSet<String>,
+) -> Vec<GroupedEntry<'a>> {
+    if lines.is_empty() {
+        return vec![];
+    }
 
     let mut entries: Vec<GroupedEntry> = Vec::with_capacity(lines.len());
     let mut i = 0;
@@ -739,7 +953,9 @@ fn group_entries<'a>(lines: &[(u64, &'a str, u64)], entry_fps: &HashSet<String>)
     while i < lines.len() && !is_entry_start(lines[i].1, entry_fps) {
         i += 1;
     }
-    if i >= lines.len() { return entries; }
+    if i >= lines.len() {
+        return entries;
+    }
 
     let mut cur_start = lines[i].0;
     let mut cur_line = lines[i].1;
@@ -772,14 +988,20 @@ fn group_entries<'a>(lines: &[(u64, &'a str, u64)], entry_fps: &HashSet<String>)
     entries
 }
 
-/// Validates file paths: checks existence, readability, and non-emptiness.
-/// Returns only the valid paths, printing warnings for skipped files.
+/// Send a desktop notification for anomaly alerts.
+#[allow(unused_variables)]
 fn send_os_notification(title: &str, message: &str) {
     #[cfg(target_os = "macos")]
     {
         let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
         let _ = std::process::Command::new("osascript")
-            .args(["-e", &format!("display notification \"{}\" with title \"{}\"", escaped, title)])
+            .args([
+                "-e",
+                &format!(
+                    "display notification \"{}\" with title \"{}\"",
+                    escaped, title
+                ),
+            ])
             .output();
     }
     #[cfg(target_os = "linux")]
@@ -798,14 +1020,24 @@ fn watch_files(
     alert_score: Option<f64>,
 ) -> Result<()> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-    use std::sync::mpsc;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
 
     // Phase 1: Initial processing of all files
-    println!("[watch] Initial processing of {} file(s)...", file_paths.len());
+    println!(
+        "[watch] Initial processing of {} file(s)...",
+        file_paths.len()
+    );
     let stdin_paths = HashSet::new();
-    process_files(storage, file_paths, threshold, batch_size, None, &stdin_paths)?;
+    process_files(
+        storage,
+        file_paths,
+        threshold,
+        batch_size,
+        None,
+        &stdin_paths,
+    )?;
     println!("[watch] Initial processing complete.\n");
 
     // Phase 2: Set up file watching
@@ -818,7 +1050,8 @@ fn watch_files(
             }
         },
         Config::default(),
-    ).context("Failed to create file watcher")?;
+    )
+    .context("Failed to create file watcher")?;
 
     // Watch parent directories of all input files
     let mut watched_dirs: HashSet<String> = HashSet::new();
@@ -828,7 +1061,8 @@ fn watch_files(
         if let Some(parent) = abs_path.parent() {
             let dir_str = parent.to_string_lossy().to_string();
             if watched_dirs.insert(dir_str.clone()) {
-                watcher.watch(parent, RecursiveMode::NonRecursive)
+                watcher
+                    .watch(parent, RecursiveMode::NonRecursive)
                     .with_context(|| format!("Failed to watch directory: {}", parent.display()))?;
                 println!("[watch] Watching directory: {}", parent.display());
             }
@@ -836,16 +1070,24 @@ fn watch_files(
     }
 
     // Build a set of canonical paths for quick lookup
-    let canonical_paths: HashMap<String, String> = file_paths.iter().filter_map(|fp| {
-        std::fs::canonicalize(fp).ok().map(|cp| (cp.to_string_lossy().to_string(), fp.clone()))
-    }).collect();
+    let canonical_paths: HashMap<String, String> = file_paths
+        .iter()
+        .filter_map(|fp| {
+            std::fs::canonicalize(fp)
+                .ok()
+                .map(|cp| (cp.to_string_lossy().to_string(), fp.clone()))
+        })
+        .collect();
 
     // Set up Ctrl+C handler
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc_flag(&r);
 
-    println!("[watch] Watching {} file(s) for changes. Press Ctrl+C to stop.\n", file_paths.len());
+    println!(
+        "[watch] Watching {} file(s) for changes. Press Ctrl+C to stop.\n",
+        file_paths.len()
+    );
 
     while running.load(Ordering::Relaxed) {
         // Wait for events with a timeout so we can check the running flag
@@ -863,15 +1105,13 @@ fn watch_files(
         // Drain any additional pending events to batch-process
         let mut all_modified: HashSet<String> = HashSet::new();
         for path in &event.paths {
-            let canon = std::fs::canonicalize(path)
-                .unwrap_or_else(|_| path.clone());
+            let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
             all_modified.insert(canon.to_string_lossy().to_string());
         }
         while let Ok(extra) = rx.try_recv() {
             if matches!(extra.kind, notify::EventKind::Modify(_)) {
                 for path in &extra.paths {
-                    let canon = std::fs::canonicalize(path)
-                        .unwrap_or_else(|_| path.clone());
+                    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
                     all_modified.insert(canon.to_string_lossy().to_string());
                 }
             }
@@ -890,12 +1130,13 @@ fn watch_files(
             };
 
             // Get last processed position from DB
-            let groups = group_files(&[original_path.clone()], None, &HashSet::new());
+            let groups = group_files(std::slice::from_ref(original_path), None, &HashSet::new());
             let (group_name, _) = match groups.iter().next() {
                 Some(g) => g,
                 None => continue,
             };
-            let file_group_id = storage.get_or_create_file_group(group_name)
+            let file_group_id = storage
+                .get_or_create_file_group(group_name)
                 .context("Failed to get file group")?;
             let source = storage.get_or_create_log_source(original_path, file_group_id)?;
             let last_pos = source.last_processed_position;
@@ -906,7 +1147,10 @@ fn watch_files(
 
             // Handle log rotation (file truncated)
             if current_size < last_pos {
-                println!("[watch] File truncated (rotation detected): {} — resetting position to 0", original_path);
+                println!(
+                    "[watch] File truncated (rotation detected): {} — resetting position to 0",
+                    original_path
+                );
                 storage.conn.execute(
                     "UPDATE log_sources SET last_processed_position = 0 WHERE id = ?",
                     rusqlite::params![source.id.unwrap()],
@@ -926,13 +1170,15 @@ fn watch_files(
 
             // Seed parser from existing patterns
             {
-                let mut stmt = storage.conn.prepare(
-                    "SELECT id, template FROM patterns WHERE file_group_id = ?"
-                )?;
-                let rows = stmt.query_map(rusqlite::params![file_group_id], |row| Ok(LogTemplate {
-                    id: Some(row.get(0)?),
-                    template: row.get(1)?,
-                }))?;
+                let mut stmt = storage
+                    .conn
+                    .prepare("SELECT id, template FROM patterns WHERE file_group_id = ?")?;
+                let rows = stmt.query_map(rusqlite::params![file_group_id], |row| {
+                    Ok(LogTemplate {
+                        id: Some(row.get(0)?),
+                        template: row.get(1)?,
+                    })
+                })?;
                 for row in rows {
                     let template = row?;
                     let db_id = template.id.unwrap();
@@ -942,15 +1188,22 @@ fn watch_files(
                 }
             }
 
-            let pre_count: i64 = storage.conn.query_row(
-                "SELECT COUNT(*) FROM occurrences WHERE log_source_id = ?",
-                rusqlite::params![source.id.unwrap()],
-                |row| row.get(0),
-            ).unwrap_or(0);
+            let pre_count: i64 = storage
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM occurrences WHERE log_source_id = ?",
+                    rusqlite::params![source.id.unwrap()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
 
             process_file(
-                storage, original_path, file_group_id,
-                &mut parser, &mut pattern_id_cache, &mut occurrence_counts,
+                storage,
+                original_path,
+                file_group_id,
+                &mut parser,
+                &mut pattern_id_cache,
+                &mut occurrence_counts,
                 batch_size,
             )?;
 
@@ -958,7 +1211,9 @@ fn watch_files(
             {
                 let tx = storage.conn.transaction()?;
                 {
-                    let mut update_stmt = tx.prepare("UPDATE patterns SET occurrence_count = occurrence_count + ? WHERE id = ?")?;
+                    let mut update_stmt = tx.prepare(
+                        "UPDATE patterns SET occurrence_count = occurrence_count + ? WHERE id = ?",
+                    )?;
                     for (template_idx, count) in &occurrence_counts {
                         if let Some(&pattern_id) = pattern_id_cache.get(template_idx) {
                             update_stmt.execute(rusqlite::params![*count as i64, pattern_id])?;
@@ -968,15 +1223,20 @@ fn watch_files(
                 tx.commit()?;
             }
 
-            let post_count: i64 = storage.conn.query_row(
-                "SELECT COUNT(*) FROM occurrences WHERE log_source_id = ?",
-                rusqlite::params![source.id.unwrap()],
-                |row| row.get(0),
-            ).unwrap_or(0);
+            let post_count: i64 = storage
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM occurrences WHERE log_source_id = ?",
+                    rusqlite::params![source.id.unwrap()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
 
             let new_entries = post_count - pre_count;
-            println!("[watch] File modified: {} (+{} bytes, {} new entries)",
-                original_path, new_bytes, new_entries);
+            println!(
+                "[watch] File modified: {} (+{} bytes, {} new entries)",
+                original_path, new_bytes, new_entries
+            );
 
             // Check anomaly alerts if --alert-score is set
             if let Some(alert_threshold) = alert_score {
@@ -987,7 +1247,11 @@ fn watch_files(
                             "Anomaly score {:.1} in group '{}': {}",
                             a.score,
                             a.group,
-                            if a.template.len() > 80 { &a.template[..80] } else { &a.template }
+                            if a.template.len() > 80 {
+                                &a.template[..80]
+                            } else {
+                                &a.template
+                            }
                         );
                         println!("[watch] ALERT: {}", msg);
                         send_os_notification("Hearken Alert", &msg);
@@ -1047,7 +1311,10 @@ fn validate_files(files: &[String]) -> Vec<String> {
                 }
             }
             Err(e) => {
-                eprintln!("Warning: skipping '{}' — cannot read metadata: {}", file_path, e);
+                eprintln!(
+                    "Warning: skipping '{}' — cannot read metadata: {}",
+                    file_path, e
+                );
                 continue;
             }
         }
@@ -1056,9 +1323,20 @@ fn validate_files(files: &[String]) -> Vec<String> {
     valid
 }
 
-fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, batch_size: usize, group_name_override: Option<&str>, stdin_paths: &HashSet<String>) -> Result<()> {
+fn process_files(
+    storage: &mut Storage,
+    file_paths: &[String],
+    threshold: f64,
+    batch_size: usize,
+    group_name_override: Option<&str>,
+    stdin_paths: &HashSet<String>,
+) -> Result<()> {
     let groups = group_files(file_paths, group_name_override, stdin_paths);
-    println!("Found {} file group(s) from {} file(s):", groups.len(), file_paths.len());
+    println!(
+        "Found {} file group(s) from {} file(s):",
+        groups.len(),
+        file_paths.len()
+    );
     for (group_name, files) in &groups {
         println!("  {} ({} file(s))", group_name, files.len());
         for f in files {
@@ -1068,11 +1346,15 @@ fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, b
     println!();
 
     // Pre-create file groups so IDs are available for parallel processing
-    let group_ids: Vec<(String, Vec<String>, i64)> = groups.iter().map(|(name, files)| {
-        let id = storage.get_or_create_file_group(name)
-            .expect("Failed to create file group");
-        (name.clone(), files.clone(), id)
-    }).collect();
+    let group_ids: Vec<(String, Vec<String>, i64)> = groups
+        .iter()
+        .map(|(name, files)| {
+            let id = storage
+                .get_or_create_file_group(name)
+                .expect("Failed to create file group");
+            (name.clone(), files.clone(), id)
+        })
+        .collect();
 
     let db_path = storage.db_path().to_string();
 
@@ -1080,28 +1362,36 @@ fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, b
         // Process groups in parallel, each with its own DB connection
         println!("Processing {} groups in parallel...\n", group_ids.len());
         let errors: Vec<String> = std::thread::scope(|s| {
-            let handles: Vec<_> = group_ids.iter().map(|(group_name, files, file_group_id)| {
-                let db_path = db_path.clone();
-                let group_name = group_name.clone();
-                let files = files.clone();
-                let file_group_id = *file_group_id;
-                s.spawn(move || -> Result<()> {
-                    let mut thread_storage = Storage::open(&db_path)
-                        .context("Failed to open database in thread")?;
-                    process_group(
-                        &mut thread_storage, &group_name, &files,
-                        file_group_id, threshold, batch_size,
-                    )
+            let handles: Vec<_> = group_ids
+                .iter()
+                .map(|(group_name, files, file_group_id)| {
+                    let db_path = db_path.clone();
+                    let group_name = group_name.clone();
+                    let files = files.clone();
+                    let file_group_id = *file_group_id;
+                    s.spawn(move || -> Result<()> {
+                        let mut thread_storage =
+                            Storage::open(&db_path).context("Failed to open database in thread")?;
+                        process_group(
+                            &mut thread_storage,
+                            &group_name,
+                            &files,
+                            file_group_id,
+                            threshold,
+                            batch_size,
+                        )
+                    })
                 })
-            }).collect();
+                .collect();
 
-            handles.into_iter().filter_map(|h| {
-                match h.join() {
+            handles
+                .into_iter()
+                .filter_map(|h| match h.join() {
                     Ok(Ok(())) => None,
                     Ok(Err(e)) => Some(format!("{:#}", e)),
                     Err(_) => Some("thread panicked".to_string()),
-                }
-            }).collect()
+                })
+                .collect()
         });
 
         if !errors.is_empty() {
@@ -1113,7 +1403,14 @@ fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, b
     } else {
         // Single group — process directly (no thread overhead)
         for (group_name, files, file_group_id) in &group_ids {
-            process_group(storage, group_name, files, *file_group_id, threshold, batch_size)?;
+            process_group(
+                storage,
+                group_name,
+                files,
+                *file_group_id,
+                threshold,
+                batch_size,
+            )?;
         }
     }
 
@@ -1150,13 +1447,15 @@ fn process_group(
 
     // Seed parser from existing patterns for this group
     {
-        let mut stmt = storage.conn.prepare(
-            "SELECT id, template FROM patterns WHERE file_group_id = ?"
-        )?;
-        let rows = stmt.query_map(rusqlite::params![file_group_id], |row| Ok(LogTemplate {
-            id: Some(row.get(0)?),
-            template: row.get(1)?,
-        }))?;
+        let mut stmt = storage
+            .conn
+            .prepare("SELECT id, template FROM patterns WHERE file_group_id = ?")?;
+        let rows = stmt.query_map(rusqlite::params![file_group_id], |row| {
+            Ok(LogTemplate {
+                id: Some(row.get(0)?),
+                template: row.get(1)?,
+            })
+        })?;
         for row in rows {
             let template = row?;
             let db_id = template.id.unwrap();
@@ -1168,8 +1467,12 @@ fn process_group(
 
     for file_path in files {
         process_file(
-            storage, file_path, file_group_id,
-            &mut parser, &mut pattern_id_cache, &mut occurrence_counts,
+            storage,
+            file_path,
+            file_group_id,
+            &mut parser,
+            &mut pattern_id_cache,
+            &mut occurrence_counts,
             batch_size,
         )?;
     }
@@ -1179,7 +1482,8 @@ fn process_group(
     {
         let tx = storage.conn.transaction()?;
         {
-            let mut update_stmt = tx.prepare("UPDATE patterns SET occurrence_count = ? WHERE id = ?")?;
+            let mut update_stmt =
+                tx.prepare("UPDATE patterns SET occurrence_count = ? WHERE id = ?")?;
             for (template_idx, count) in &occurrence_counts {
                 if let Some(&pattern_id) = pattern_id_cache.get(template_idx) {
                     update_stmt.execute(rusqlite::params![*count as i64, pattern_id])?;
@@ -1189,7 +1493,11 @@ fn process_group(
         tx.commit()?;
     }
 
-    println!("Group '{}': {} patterns discovered.\n", group_name, parser.templates.len());
+    println!(
+        "Group '{}': {} patterns discovered.\n",
+        group_name,
+        parser.templates.len()
+    );
     Ok(())
 }
 
@@ -1228,15 +1536,23 @@ fn process_file(
             entry_fingerprints = detect_entry_fingerprints(&lines_with_pos);
             fingerprints_detected = true;
             if entry_fingerprints.is_empty() {
-                println!("No dominant line structure detected — treating each line as a separate entry.");
+                println!(
+                    "No dominant line structure detected — treating each line as a separate entry."
+                );
             } else {
-                let entry_count = lines_with_pos.iter()
+                let entry_count = lines_with_pos
+                    .iter()
                     .filter(|(_, line, _)| is_entry_start(line, &entry_fingerprints))
                     .count();
                 let cont = lines_with_pos.len() - entry_count;
-                println!("Auto-detected entry structure ({} pattern(s)): {}/{} lines are entries, {} are continuations ({:.1}%)",
-                    entry_fingerprints.len(), entry_count, lines_with_pos.len(),
-                    cont, cont as f64 / lines_with_pos.len() as f64 * 100.0);
+                println!(
+                    "Auto-detected entry structure ({} pattern(s)): {}/{} lines are entries, {} are continuations ({:.1}%)",
+                    entry_fingerprints.len(),
+                    entry_count,
+                    lines_with_pos.len(),
+                    cont,
+                    cont as f64 / lines_with_pos.len() as f64 * 100.0
+                );
             }
         }
 
@@ -1255,23 +1571,33 @@ fn process_file(
             100.0
         };
 
-        println!("Progress: {:.2}% (Position: {}, Lines: {}, Entries: {})",
-            progress, start_pos, total_lines, entries.len());
+        println!(
+            "Progress: {:.2}% (Position: {}, Lines: {}, Entries: {})",
+            progress,
+            start_pos,
+            total_lines,
+            entries.len()
+        );
 
         // 1. Parallel Transformation Phase (CPU HEAVY)
         // Tokenize primary line + continuation lines into a single token stream.
         let t_parallel = Instant::now();
-        let parallel_results: Vec<(Vec<&str>, Option<usize>)> = entries.par_iter().map(|entry| {
-            let mut tokens: Vec<&str> = tokenize(entry.primary_line);
-            for cont_line in &entry.continuation_lines {
-                if tokens.len() >= 1024 { break; }
-                tokens.push("\n");
-                tokens.extend(tokenize(cont_line));
-            }
-            tokens.truncate(1024);
-            let matched = parser.find_match(&tokens);
-            (tokens, matched)
-        }).collect();
+        let parallel_results: Vec<(Vec<&str>, Option<usize>)> = entries
+            .par_iter()
+            .map(|entry| {
+                let mut tokens: Vec<&str> = tokenize(entry.primary_line);
+                for cont_line in &entry.continuation_lines {
+                    if tokens.len() >= 1024 {
+                        break;
+                    }
+                    tokens.push("\n");
+                    tokens.extend(tokenize(cont_line));
+                }
+                tokens.truncate(1024);
+                let matched = parser.find_match(&tokens);
+                (tokens, matched)
+            })
+            .collect();
         let parallel_ms = t_parallel.elapsed().as_millis();
 
         // 2. Sequential Discovery Phase — pattern matching only, no DB writes
@@ -1282,7 +1608,9 @@ fn process_file(
 
         for (entry_idx, (tokens, maybe_match)) in parallel_results.iter().enumerate() {
             let template_idx = parser.parse_tokens(tokens, *maybe_match);
-            if template_idx == usize::MAX { continue; }
+            if template_idx == usize::MAX {
+                continue;
+            }
 
             // Count occurrence in-memory
             *occurrence_counts.entry(template_idx).or_insert(0) += 1;
@@ -1293,7 +1621,9 @@ fn process_file(
             // Track new/evolved patterns for DB persistence
             let mut p_id = template.id;
             let evolved = p_id.is_some_and(|id| id < 0);
-            if evolved { p_id = p_id.map(|id| -id); }
+            if evolved {
+                p_id = p_id.map(|id| -id);
+            }
 
             if let Some(id) = p_id {
                 if evolved {
@@ -1332,7 +1662,8 @@ fn process_file(
         }
 
         if !evolved_patterns.is_empty() {
-            let mut update_stmt = tx.prepare_cached("UPDATE patterns SET template = ? WHERE id = ?")?;
+            let mut update_stmt =
+                tx.prepare_cached("UPDATE patterns SET template = ? WHERE id = ?")?;
             for (id, template_str) in &evolved_patterns {
                 update_stmt.execute(rusqlite::params![template_str, id])?;
             }
@@ -1356,11 +1687,15 @@ fn process_file(
                     let entry_ts = extract_timestamp(entries[entry_idx].primary_line);
                     let tmpl_tokens = &parser.templates[template_idx].tokens;
                     let entry_tokens = &parallel_results[entry_idx].0;
-                    let variables: String = tmpl_tokens.iter().zip(entry_tokens.iter())
+                    let variables: String = tmpl_tokens
+                        .iter()
+                        .zip(entry_tokens.iter())
                         .filter_map(|(t, e)| if *t == "<*>" { Some(*e) } else { None })
                         .collect::<Vec<_>>()
                         .join("\t");
-                    occ_stmt.execute(rusqlite::params![source_id, pattern_id, pos, entry_ts, variables])?;
+                    occ_stmt.execute(rusqlite::params![
+                        source_id, pattern_id, pos, entry_ts, variables
+                    ])?;
                 }
             }
         }
@@ -1369,8 +1704,13 @@ fn process_file(
         let db_ms = t_db.elapsed().as_millis();
         current_pos = last_entry_pos;
 
-        println!("  Batch: parallel={}ms, sequential={}ms, db={}ms, templates={}",
-            parallel_ms, sequential_ms, db_ms, parser.templates.len());
+        println!(
+            "  Batch: parallel={}ms, sequential={}ms, db={}ms, templates={}",
+            parallel_ms,
+            sequential_ms,
+            db_ms,
+            parser.templates.len()
+        );
     }
 
     println!("  {} lines processed.", total_lines);
@@ -1387,15 +1727,22 @@ fn search_patterns(storage: &Storage, query: &str) -> Result<()> {
 }
 
 fn show_stats(storage: &Storage, db_path: &str) -> Result<()> {
-    let pattern_count: i64 = storage.conn.query_row(
-        "SELECT COUNT(*) FROM patterns", [], |r| r.get(0)
-    ).unwrap_or(0);
-    let occurrence_count: i64 = storage.conn.query_row(
-        "SELECT COALESCE(SUM(occurrence_count), 0) FROM patterns", [], |r| r.get(0)
-    ).unwrap_or(0);
-    let source_count: i64 = storage.conn.query_row(
-        "SELECT COUNT(*) FROM log_sources", [], |r| r.get(0)
-    ).unwrap_or(0);
+    let pattern_count: i64 = storage
+        .conn
+        .query_row("SELECT COUNT(*) FROM patterns", [], |r| r.get(0))
+        .unwrap_or(0);
+    let occurrence_count: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COALESCE(SUM(occurrence_count), 0) FROM patterns",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let source_count: i64 = storage
+        .conn
+        .query_row("SELECT COUNT(*) FROM log_sources", [], |r| r.get(0))
+        .unwrap_or(0);
 
     println!("═══ Hearken Database Statistics ═══\n");
     println!("Patterns:     {}", pattern_count);
@@ -1408,16 +1755,20 @@ fn show_stats(storage: &Storage, db_path: &str) -> Result<()> {
          FROM file_groups fg
          LEFT JOIN patterns p ON p.file_group_id = fg.id
          GROUP BY fg.id
-         ORDER BY fg.name"
+         ORDER BY fg.name",
     )?;
-    let groups: Vec<(String, i64, i64)> = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    })?.filter_map(|r| r.ok()).collect();
+    let groups: Vec<(String, i64, i64)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
 
     if !groups.is_empty() {
         println!("\nFile groups:   {}", groups.len());
         for (name, pcount, ocount) in &groups {
-            println!("  {:<30} {:>6} patterns, {:>10} occurrences", name, pcount, ocount);
+            println!(
+                "  {:<30} {:>6} patterns, {:>10} occurrences",
+                name, pcount, ocount
+            );
         }
     }
 
@@ -1426,11 +1777,12 @@ fn show_stats(storage: &Storage, db_path: &str) -> Result<()> {
         "SELECT ls.file_path, ls.last_processed_position, fg.name
          FROM log_sources ls
          JOIN file_groups fg ON ls.file_group_id = fg.id
-         ORDER BY fg.name, ls.file_path"
+         ORDER BY fg.name, ls.file_path",
     )?;
-    let sources: Vec<(String, i64, String)> = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    })?.filter_map(|r| r.ok()).collect();
+    let sources: Vec<(String, i64, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
 
     if !sources.is_empty() {
         println!("\nSource files:");
@@ -1441,7 +1793,10 @@ fn show_stats(storage: &Storage, db_path: &str) -> Result<()> {
             } else {
                 "N/A".to_string()
             };
-            println!("  [{}] {} (processed: {} bytes, {})", group, path, pos, progress);
+            println!(
+                "  [{}] {} (processed: {} bytes, {})",
+                group, path, pos, progress
+            );
         }
     }
 
@@ -1460,7 +1815,10 @@ fn show_stats(storage: &Storage, db_path: &str) -> Result<()> {
     if shm_size > 0 {
         println!("  SHM file:    {} ({})", shm_path, format_size(shm_size));
     }
-    println!("  Total:       {}", format_size(db_size + wal_size + shm_size));
+    println!(
+        "  Total:       {}",
+        format_size(db_size + wal_size + shm_size)
+    );
 
     Ok(())
 }
@@ -1486,7 +1844,9 @@ fn load_suppressed_ids(tags_file: Option<&str>) -> HashSet<i64> {
                     for (id_str, tag_list) in obj {
                         if let Some(arr) = tag_list.as_array() {
                             let has_suppress = arr.iter().any(|t| {
-                                t.as_str().map(|s| s == "suppress" || s == "ignore").unwrap_or(false)
+                                t.as_str()
+                                    .map(|s| s == "suppress" || s == "ignore")
+                                    .unwrap_or(false)
                             });
                             if has_suppress {
                                 if let Ok(id) = id_str.parse::<i64>() {
@@ -1502,18 +1862,30 @@ fn load_suppressed_ids(tags_file: Option<&str>) -> HashSet<i64> {
     suppressed
 }
 
-fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: usize, top_n: usize, filter: Option<Vec<String>>, group_filter: Option<Vec<String>>, tags_file: Option<String>, include_suppressed: bool, bucket: &str) -> Result<()> {
+fn generate_report(
+    storage: &Storage,
+    output_path: &str,
+    samples_per_pattern: usize,
+    top_n: usize,
+    filter: Option<Vec<String>>,
+    group_filter: Option<Vec<String>>,
+    tags_file: Option<String>,
+    include_suppressed: bool,
+    bucket: &str,
+) -> Result<()> {
     let start = Instant::now();
     println!("Generating report...");
 
-    let (pattern_count, total_occurrences, sources, file_groups) = storage.get_report_summary()
+    let (pattern_count, total_occurrences, sources, file_groups) = storage
+        .get_report_summary()
         .context("Failed to query report summary")?;
 
     if pattern_count == 0 {
         anyhow::bail!("No patterns found in database. Process a log file first.");
     }
 
-    let patterns = storage.get_all_patterns_ranked(top_n, filter.as_deref(), group_filter.as_deref())
+    let patterns = storage
+        .get_all_patterns_ranked(top_n, filter.as_deref(), group_filter.as_deref())
         .context("Failed to query patterns")?;
 
     if let Some(ref f) = filter {
@@ -1532,30 +1904,46 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
     // Check for timestamps and fetch time-series data if available
     let has_timestamps = storage.has_timestamps().unwrap_or(false);
     let time_series = if has_timestamps {
-        storage.get_pattern_time_series(&pattern_ids, bucket).unwrap_or_default()
+        storage
+            .get_pattern_time_series(&pattern_ids, bucket)
+            .unwrap_or_default()
     } else {
         HashMap::new()
     };
 
     let mut pattern_data = Vec::with_capacity(patterns.len());
     for (id, template, count, group_name) in &patterns {
-        let raw_samples = storage.get_pattern_samples(*id, samples_per_pattern)
+        let raw_samples = storage
+            .get_pattern_samples(*id, samples_per_pattern)
             .unwrap_or_default();
-        let samples: Vec<serde_json::Value> = raw_samples.iter().map(|(vars, source_path)| {
-            serde_json::json!({
-                "text": reconstruct_entry(template, vars),
-                "source": Path::new(source_path).file_name()
-                    .and_then(|f| f.to_str()).unwrap_or(source_path),
+        let samples: Vec<serde_json::Value> = raw_samples
+            .iter()
+            .map(|(vars, source_path)| {
+                serde_json::json!({
+                    "text": reconstruct_entry(template, vars),
+                    "source": Path::new(source_path).file_name()
+                        .and_then(|f| f.to_str()).unwrap_or(source_path),
+                })
             })
-        }).collect();
-        let dist = distribution.get(id).map(|t| {
-            t.iter().map(|(name, cnt)| serde_json::json!({"source": name, "count": cnt})).collect::<Vec<_>>()
-        }).unwrap_or_default();
+            .collect();
+        let dist = distribution
+            .get(id)
+            .map(|t| {
+                t.iter()
+                    .map(|(name, cnt)| serde_json::json!({"source": name, "count": cnt}))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         let trend = if has_timestamps {
-            time_series.get(id).map(|t| {
-                t.iter().map(|(b, cnt)| serde_json::json!({"bucket": b, "count": cnt})).collect::<Vec<_>>()
-            }).unwrap_or_default()
+            time_series
+                .get(id)
+                .map(|t| {
+                    t.iter()
+                        .map(|(b, cnt)| serde_json::json!({"bucket": b, "count": cnt}))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
         } else {
             dist.clone()
         };
@@ -1577,25 +1965,26 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
         for p in pattern_data.iter_mut() {
             if let Some(id) = p.get("id").and_then(|v| v.as_i64()) {
                 if suppressed_ids.contains(&id) {
-                    p.as_object_mut().unwrap().insert("suppressed".to_string(), serde_json::json!(true));
+                    p.as_object_mut()
+                        .unwrap()
+                        .insert("suppressed".to_string(), serde_json::json!(true));
                 }
             }
         }
         if !include_suppressed {
             pattern_data.retain(|p| {
-                !p.get("suppressed").and_then(|v| v.as_bool()).unwrap_or(false)
+                !p.get("suppressed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
             });
         }
     }
 
-    let now: String = {
-        let output = std::process::Command::new("date")
-            .arg("+%Y-%m-%d %H:%M:%S")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
-        output
-    };
+    let now: String = std::process::Command::new("date")
+        .arg("+%Y-%m-%d %H:%M:%S")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     let command = std::env::args().collect::<Vec<_>>().join(" ");
     // Load existing tags from sidecar file
     let tags: serde_json::Value = if let Some(ref tf) = tags_file {
@@ -1633,8 +2022,8 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
         "tags": tags,
     });
 
-    let json_str = serde_json::to_string(&report_json)
-        .context("Failed to serialize report data")?;
+    let json_str =
+        serde_json::to_string(&report_json).context("Failed to serialize report data")?;
 
     // Escape sequences that would break the <script> tag when embedded in HTML.
     // "</script>" or "</Script>" etc. inside a string literal terminates the tag.
@@ -1645,7 +2034,10 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
     let file_size_bytes = html.len();
 
     // Inject the file size into the already-built HTML via a data attribute on the body
-    let html = html.replace("<body>", &format!("<body data-file-size=\"{}\">", file_size_bytes));
+    let html = html.replace(
+        "<body>",
+        &format!("<body data-file-size=\"{}\">", file_size_bytes),
+    );
 
     std::fs::write(output_path, &html)
         .with_context(|| format!("Failed to write report to {}", output_path))?;
@@ -1702,13 +2094,17 @@ fn export_patterns(
         bail!("--format must be 'json' or 'csv', got '{}'", format);
     }
 
-    let patterns = storage.get_all_patterns_ranked(top_n, filter.as_deref(), group_filter.as_deref())
+    let patterns = storage
+        .get_all_patterns_ranked(top_n, filter.as_deref(), group_filter.as_deref())
         .context("Failed to query patterns")?;
 
     // Filter out suppressed patterns unless include_suppressed is set
     let suppressed_ids = load_suppressed_ids(tags_file);
     let patterns: Vec<_> = if !include_suppressed && !suppressed_ids.is_empty() {
-        patterns.into_iter().filter(|(id, _, _, _)| !suppressed_ids.contains(id)).collect()
+        patterns
+            .into_iter()
+            .filter(|(id, _, _, _)| !suppressed_ids.contains(id))
+            .collect()
     } else {
         patterns
     };
@@ -1716,15 +2112,19 @@ fn export_patterns(
     let content = if format == "json" {
         let mut pattern_data = Vec::with_capacity(patterns.len());
         for (id, template, count, group_name) in &patterns {
-            let raw_samples = storage.get_pattern_samples(*id, samples_per_pattern)
+            let raw_samples = storage
+                .get_pattern_samples(*id, samples_per_pattern)
                 .unwrap_or_default();
-            let samples: Vec<serde_json::Value> = raw_samples.iter().map(|(vars, source_path)| {
-                serde_json::json!({
-                    "text": reconstruct_entry(template, vars),
-                    "source": Path::new(source_path).file_name()
-                        .and_then(|f| f.to_str()).unwrap_or(source_path),
+            let samples: Vec<serde_json::Value> = raw_samples
+                .iter()
+                .map(|(vars, source_path)| {
+                    serde_json::json!({
+                        "text": reconstruct_entry(template, vars),
+                        "source": Path::new(source_path).file_name()
+                            .and_then(|f| f.to_str()).unwrap_or(source_path),
+                    })
                 })
-            }).collect();
+                .collect();
             pattern_data.push(serde_json::json!({
                 "id": id,
                 "group": group_name,
@@ -1733,22 +2133,32 @@ fn export_patterns(
                 "samples": samples,
             }));
         }
-        serde_json::to_string_pretty(&pattern_data)
-            .context("Failed to serialize JSON")?
+        serde_json::to_string_pretty(&pattern_data).context("Failed to serialize JSON")?
     } else {
         let mut csv = String::new();
         // Header
         let sample_headers: Vec<String> = (1..=samples_per_pattern)
             .map(|i| format!("sample_{}", i))
             .collect();
-        csv.push_str(&format!("id,group,template,occurrence_count,{}\n", sample_headers.join(",")));
+        csv.push_str(&format!(
+            "id,group,template,occurrence_count,{}\n",
+            sample_headers.join(",")
+        ));
         for (id, template, count, group_name) in &patterns {
-            let raw_samples = storage.get_pattern_samples(*id, samples_per_pattern)
+            let raw_samples = storage
+                .get_pattern_samples(*id, samples_per_pattern)
                 .unwrap_or_default();
-            let samples: Vec<String> = raw_samples.iter()
+            let samples: Vec<String> = raw_samples
+                .iter()
                 .map(|(vars, _)| reconstruct_entry(template, vars))
                 .collect();
-            csv.push_str(&format!("{},{},{},{}", id, csv_escape(group_name), csv_escape(template), count));
+            csv.push_str(&format!(
+                "{},{},{},{}",
+                id,
+                csv_escape(group_name),
+                csv_escape(template),
+                count
+            ));
             for i in 0..samples_per_pattern {
                 csv.push(',');
                 if let Some(s) = samples.get(i) {
@@ -1764,7 +2174,12 @@ fn export_patterns(
         Some(path) => {
             std::fs::write(path, &content)
                 .with_context(|| format!("Failed to write export to {}", path))?;
-            eprintln!("Exported {} patterns to {} ({})", patterns.len(), path, format.to_uppercase());
+            eprintln!(
+                "Exported {} patterns to {} ({})",
+                patterns.len(),
+                path,
+                format.to_uppercase()
+            );
         }
         None => {
             print!("{}", content);
@@ -1778,14 +2193,14 @@ fn save_baseline(storage: &Storage, output_path: &str) -> Result<()> {
     let start = Instant::now();
     println!("Saving baseline to {}...", output_path);
 
-    let mut baseline = Storage::open(output_path)
-        .context("Failed to create baseline database")?;
+    let mut baseline = Storage::open(output_path).context("Failed to create baseline database")?;
 
     // Copy file_groups
     let mut stmt = storage.conn.prepare("SELECT id, name FROM file_groups")?;
-    let groups: Vec<(i64, String)> = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?))
-    })?.filter_map(|r| r.ok()).collect();
+    let groups: Vec<(i64, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
 
     let tx = baseline.conn.transaction()?;
     for (id, name) in &groups {
@@ -1799,9 +2214,12 @@ fn save_baseline(storage: &Storage, output_path: &str) -> Result<()> {
     let mut stmt = storage.conn.prepare(
         "SELECT id, file_group_id, template, occurrence_count FROM patterns WHERE occurrence_count > 0"
     )?;
-    let patterns: Vec<(i64, i64, String, i64)> = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-    })?.filter_map(|r| r.ok()).collect();
+    let patterns: Vec<(i64, i64, String, i64)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     {
         let mut insert_stmt = tx.prepare(
@@ -1814,9 +2232,8 @@ fn save_baseline(storage: &Storage, output_path: &str) -> Result<()> {
 
     // Also populate the FTS table
     {
-        let mut fts_stmt = tx.prepare(
-            "INSERT INTO patterns_fts (pattern_id, template) VALUES (?, ?)"
-        )?;
+        let mut fts_stmt =
+            tx.prepare("INSERT INTO patterns_fts (pattern_id, template) VALUES (?, ?)")?;
         for (id, _, template, _) in &patterns {
             fts_stmt.execute(rusqlite::params![id, template])?;
         }
@@ -1843,8 +2260,11 @@ struct DiffResult {
 fn compute_diff(before_path: &str, after_path: &str) -> Result<DiffResult> {
     let conn = rusqlite::Connection::open(after_path)
         .with_context(|| format!("Failed to open 'after' database: {}", after_path))?;
-    conn.execute("ATTACH DATABASE ? AS before_db", rusqlite::params![before_path])
-        .with_context(|| format!("Failed to attach 'before' database: {}", before_path))?;
+    conn.execute(
+        "ATTACH DATABASE ? AS before_db",
+        rusqlite::params![before_path],
+    )
+    .with_context(|| format!("Failed to attach 'before' database: {}", before_path))?;
 
     let mut new_patterns: Vec<(String, String, i64)> = Vec::new();
     {
@@ -1858,12 +2278,18 @@ fn compute_diff(before_path: &str, after_path: &str) -> Result<DiffResult> {
                  WHERE bfg.name = fg.name AND bp.template = p.template
              )
              AND p.occurrence_count > 0
-             ORDER BY p.occurrence_count DESC"
+             ORDER BY p.occurrence_count DESC",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })?;
-        for row in rows { new_patterns.push(row?); }
+        for row in rows {
+            new_patterns.push(row?);
+        }
     }
 
     let mut resolved_patterns: Vec<(String, String, i64)> = Vec::new();
@@ -1878,12 +2304,18 @@ fn compute_diff(before_path: &str, after_path: &str) -> Result<DiffResult> {
                  WHERE fg.name = bfg.name AND p.template = bp.template
              )
              AND bp.occurrence_count > 0
-             ORDER BY bp.occurrence_count DESC"
+             ORDER BY bp.occurrence_count DESC",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })?;
-        for row in rows { resolved_patterns.push(row?); }
+        for row in rows {
+            resolved_patterns.push(row?);
+        }
     }
 
     let mut changed_patterns: Vec<(String, String, i64, i64)> = Vec::new();
@@ -1899,14 +2331,25 @@ fn compute_diff(before_path: &str, after_path: &str) -> Result<DiffResult> {
              ORDER BY ABS(p.occurrence_count - bp.occurrence_count) DESC"
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
         })?;
-        for row in rows { changed_patterns.push(row?); }
+        for row in rows {
+            changed_patterns.push(row?);
+        }
     }
 
     conn.execute("DETACH DATABASE before_db", [])?;
 
-    Ok(DiffResult { new_patterns, resolved_patterns, changed_patterns })
+    Ok(DiffResult {
+        new_patterns,
+        resolved_patterns,
+        changed_patterns,
+    })
 }
 
 fn format_diff(diff: &DiffResult, before_path: &str, after_path: &str, format: &str) -> Result<()> {
@@ -1914,7 +2357,11 @@ fn format_diff(diff: &DiffResult, before_path: &str, after_path: &str, format: &
         bail!("--format must be 'text' or 'json', got '{}'", format);
     }
 
-    let DiffResult { new_patterns, resolved_patterns, changed_patterns } = diff;
+    let DiffResult {
+        new_patterns,
+        resolved_patterns,
+        changed_patterns,
+    } = diff;
 
     if format == "json" {
         let output = serde_json::json!({
@@ -1940,7 +2387,11 @@ fn format_diff(diff: &DiffResult, before_path: &str, after_path: &str, format: &
 
         fn truncate_template(t: &str, max: usize) -> String {
             let first_line = t.lines().next().unwrap_or(t);
-            if first_line.len() > max { format!("{}…", &first_line[..max]) } else { first_line.to_string() }
+            if first_line.len() > max {
+                format!("{}…", &first_line[..max])
+            } else {
+                first_line.to_string()
+            }
         }
 
         if new_patterns.is_empty() {
@@ -1948,7 +2399,12 @@ fn format_diff(diff: &DiffResult, before_path: &str, after_path: &str, format: &
         } else {
             println!("🆕 New patterns: {}", new_patterns.len());
             for (group, template, count) in new_patterns {
-                println!("  [{:<20}] {:>8}x  {}", group, count, truncate_template(template, 100));
+                println!(
+                    "  [{:<20}] {:>8}x  {}",
+                    group,
+                    count,
+                    truncate_template(template, 100)
+                );
             }
         }
         println!();
@@ -1958,7 +2414,12 @@ fn format_diff(diff: &DiffResult, before_path: &str, after_path: &str, format: &
         } else {
             println!("🗑️  Resolved patterns: {}", resolved_patterns.len());
             for (group, template, count) in resolved_patterns {
-                println!("  [{:<20}] {:>8}x  {}", group, count, truncate_template(template, 100));
+                println!(
+                    "  [{:<20}] {:>8}x  {}",
+                    group,
+                    count,
+                    truncate_template(template, 100)
+                );
             }
         }
         println!();
@@ -1970,11 +2431,24 @@ fn format_diff(diff: &DiffResult, before_path: &str, after_path: &str, format: &
             for (group, template, before, after) in changed_patterns {
                 let pct = (*after as f64 / *before as f64 - 1.0) * 100.0;
                 let arrow = if pct > 0.0 { "↑" } else { "↓" };
-                println!("  [{:<20}] {} → {} ({}{:.0}%)  {}", group, before, after, arrow, pct.abs(), truncate_template(template, 80));
+                println!(
+                    "  [{:<20}] {} → {} ({}{:.0}%)  {}",
+                    group,
+                    before,
+                    after,
+                    arrow,
+                    pct.abs(),
+                    truncate_template(template, 80)
+                );
             }
         }
 
-        println!("\nSummary: {} new, {} resolved, {} changed (>2x)", new_patterns.len(), resolved_patterns.len(), changed_patterns.len());
+        println!(
+            "\nSummary: {} new, {} resolved, {} changed (>2x)",
+            new_patterns.len(),
+            resolved_patterns.len(),
+            changed_patterns.len()
+        );
     }
 
     Ok(())
@@ -2005,14 +2479,19 @@ fn find_duplicates(
     let mut by_group: BTreeMap<String, Vec<(i64, Vec<String>, i64)>> = BTreeMap::new();
     for (id, template, count, group) in &patterns {
         let tokens: Vec<String> = tokenize(template).iter().map(|s| s.to_string()).collect();
-        by_group.entry(group.clone()).or_default().push((*id, tokens, *count));
+        by_group
+            .entry(group.clone())
+            .or_default()
+            .push((*id, tokens, *count));
     }
 
     // Union-Find for clustering
     let mut parent: HashMap<i64, i64> = HashMap::new();
     fn uf_find(parent: &mut HashMap<i64, i64>, x: i64) -> i64 {
         let p = *parent.get(&x).unwrap_or(&x);
-        if p == x { return x; }
+        if p == x {
+            return x;
+        }
         let root = uf_find(parent, p);
         parent.insert(x, root);
         root
@@ -2023,12 +2502,15 @@ fn find_duplicates(
     if mode == "semantic" {
         // Semantic mode: TF-IDF cosine similarity, works across different lengths
         for group_patterns in by_group.values_mut() {
-            if group_patterns.len() < 2 { continue; }
+            if group_patterns.len() < 2 {
+                continue;
+            }
             // Cap at 1000 for O(n²) tractability
             group_patterns.truncate(1000);
 
             // Compute IDF across all templates in this group
-            let all_tokens: Vec<Vec<String>> = group_patterns.iter().map(|(_, t, _)| t.clone()).collect();
+            let all_tokens: Vec<Vec<String>> =
+                group_patterns.iter().map(|(_, t, _)| t.clone()).collect();
             let idf = hearken_ml::compute_idf(&all_tokens);
 
             for i in 0..group_patterns.len() {
@@ -2037,7 +2519,9 @@ fn find_duplicates(
                     if sim >= threshold {
                         let ra = uf_find(&mut parent, group_patterns[i].0);
                         let rb = uf_find(&mut parent, group_patterns[j].0);
-                        if ra != rb { parent.insert(rb, ra); }
+                        if ra != rb {
+                            parent.insert(rb, ra);
+                        }
                         total_pairs += 1;
                     }
                 }
@@ -2046,7 +2530,9 @@ fn find_duplicates(
     } else {
         // Structural mode: same-length bucketing (existing logic)
         for group_patterns in by_group.values() {
-            if group_patterns.len() < 2 { continue; }
+            if group_patterns.len() < 2 {
+                continue;
+            }
             let mut by_len: HashMap<usize, Vec<usize>> = HashMap::new();
             for (i, (_, tokens, _)) in group_patterns.iter().enumerate() {
                 by_len.entry(tokens.len()).or_default().push(i);
@@ -2058,7 +2544,9 @@ fn find_duplicates(
                         if sim >= threshold {
                             let ra = uf_find(&mut parent, group_patterns[i].0);
                             let rb = uf_find(&mut parent, group_patterns[j].0);
-                            if ra != rb { parent.insert(rb, ra); }
+                            if ra != rb {
+                                parent.insert(rb, ra);
+                            }
                             total_pairs += 1;
                         }
                     }
@@ -2083,42 +2571,83 @@ fn find_duplicates(
         }
         for members in clusters.into_values() {
             if members.len() > 1 {
-                all_clusters.push(DupCluster { group: group_name.clone(), members });
+                all_clusters.push(DupCluster {
+                    group: group_name.clone(),
+                    members,
+                });
             }
         }
     }
 
     if all_clusters.is_empty() {
-        println!("No near-duplicate patterns found (threshold={:.2}).", threshold);
+        println!(
+            "No near-duplicate patterns found (threshold={:.2}).",
+            threshold
+        );
         return Ok(());
     }
 
     if format == "json" {
-        let json_items: Vec<String> = all_clusters.iter().map(|c| {
-            let members: Vec<String> = c.members.iter().map(|(id, tmpl, count)| {
-                let escaped = tmpl.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
-                format!("{{\"id\":{},\"count\":{},\"template\":\"{}\"}}", id, count, escaped)
-            }).collect();
-            format!("{{\"group\":\"{}\",\"patterns\":[{}]}}", c.group, members.join(","))
-        }).collect();
+        let json_items: Vec<String> = all_clusters
+            .iter()
+            .map(|c| {
+                let members: Vec<String> = c
+                    .members
+                    .iter()
+                    .map(|(id, tmpl, count)| {
+                        let escaped = tmpl
+                            .replace('\\', "\\\\")
+                            .replace('"', "\\\"")
+                            .replace('\n', "\\n");
+                        format!(
+                            "{{\"id\":{},\"count\":{},\"template\":\"{}\"}}",
+                            id, count, escaped
+                        )
+                    })
+                    .collect();
+                format!(
+                    "{{\"group\":\"{}\",\"patterns\":[{}]}}",
+                    c.group,
+                    members.join(",")
+                )
+            })
+            .collect();
         println!("[{}]", json_items.join(",\n"));
     } else {
         let mut current_group = "";
         for cluster in &all_clusters {
             if cluster.group != current_group {
                 current_group = &cluster.group;
-                let group_count = all_clusters.iter().filter(|c| c.group == current_group).count();
-                println!("═══ Group: {} — {} duplicate cluster(s) ═══\n", current_group, group_count);
+                let group_count = all_clusters
+                    .iter()
+                    .filter(|c| c.group == current_group)
+                    .count();
+                println!(
+                    "═══ Group: {} — {} duplicate cluster(s) ═══\n",
+                    current_group, group_count
+                );
             }
             let combined: i64 = cluster.members.iter().map(|m| m.2).sum();
-            println!("  Cluster ({} patterns, combined {} occurrences):", cluster.members.len(), combined);
+            println!(
+                "  Cluster ({} patterns, combined {} occurrences):",
+                cluster.members.len(),
+                combined
+            );
             for (id, tmpl, count) in &cluster.members {
-                let preview = if tmpl.len() > 100 { format!("{}…", &tmpl[..100]) } else { tmpl.clone() };
+                let preview = if tmpl.len() > 100 {
+                    format!("{}…", &tmpl[..100])
+                } else {
+                    tmpl.clone()
+                };
                 println!("    [id={}, count={}] {}", id, count, preview);
             }
             println!();
         }
-        println!("Found {} duplicate cluster(s) with {} similar pair(s) total.", all_clusters.len(), total_pairs);
+        println!(
+            "Found {} duplicate cluster(s) with {} similar pair(s) total.",
+            all_clusters.len(),
+            total_pairs
+        );
     }
 
     Ok(())
@@ -2132,7 +2661,10 @@ fn find_clusters(
     pattern_limit: usize,
     format: &str,
 ) -> Result<()> {
-    println!("Finding root-cause clusters (min_shared={}, pattern_limit={})...", min_shared, pattern_limit);
+    println!(
+        "Finding root-cause clusters (min_shared={}, pattern_limit={})...",
+        min_shared, pattern_limit
+    );
 
     let variable_data = storage.get_variable_index(group_filter, pattern_limit)?;
     if variable_data.is_empty() {
@@ -2143,25 +2675,40 @@ fn find_clusters(
     // Build pattern metadata: id -> (group, template)
     let mut pattern_meta: HashMap<i64, (String, String)> = HashMap::new();
     for (pid, group, tmpl, _) in &variable_data {
-        pattern_meta.entry(*pid).or_insert_with(|| (group.clone(), tmpl.clone()));
+        pattern_meta
+            .entry(*pid)
+            .or_insert_with(|| (group.clone(), tmpl.clone()));
     }
 
     let total_patterns = pattern_meta.len();
-    println!("  Analyzing variables from {} patterns ({} occurrences)...", total_patterns, variable_data.len());
+    println!(
+        "  Analyzing variables from {} patterns ({} occurrences)...",
+        total_patterns,
+        variable_data.len()
+    );
 
     // Build inverted index: variable_value -> HashSet<pattern_id>
     let mut var_to_patterns: HashMap<String, HashSet<i64>> = HashMap::new();
     for (pid, _, _, vars_str) in &variable_data {
         for var in vars_str.split('\t') {
             let var = var.trim();
-            if var.is_empty() { continue; }
-            if var.len() <= 1 { continue; }
+            if var.is_empty() {
+                continue;
+            }
+            if var.len() <= 1 {
+                continue;
+            }
             if var.len() < 5 && var.chars().all(|c| c.is_ascii_digit()) {
                 if let Ok(n) = var.parse::<i64>() {
-                    if n < 1000 { continue; }
+                    if n < 1000 {
+                        continue;
+                    }
                 }
             }
-            var_to_patterns.entry(var.to_string()).or_default().insert(*pid);
+            var_to_patterns
+                .entry(var.to_string())
+                .or_default()
+                .insert(*pid);
         }
     }
 
@@ -2179,7 +2726,7 @@ fn find_clusters(
     for (val, pids) in &var_to_patterns {
         let pids_vec: Vec<i64> = pids.iter().copied().collect();
         for i in 0..pids_vec.len() {
-            for j in (i+1)..pids_vec.len() {
+            for j in (i + 1)..pids_vec.len() {
                 let (a, b) = if pids_vec[i] < pids_vec[j] {
                     (pids_vec[i], pids_vec[j])
                 } else {
@@ -2198,7 +2745,9 @@ fn find_clusters(
 
     fn uf_find(parent: &mut HashMap<i64, i64>, x: i64) -> i64 {
         let p = *parent.get(&x).unwrap_or(&x);
-        if p == x { return x; }
+        if p == x {
+            return x;
+        }
         let root = uf_find(parent, p);
         parent.insert(x, root);
         root
@@ -2208,7 +2757,9 @@ fn find_clusters(
         if shared.len() >= min_shared {
             let ra = uf_find(&mut parent, *a);
             let rb = uf_find(&mut parent, *b);
-            if ra != rb { parent.insert(rb, ra); }
+            if ra != rb {
+                parent.insert(rb, ra);
+            }
         }
     }
 
@@ -2226,11 +2777,16 @@ fn find_clusters(
 
     let mut clusters: Vec<RootCauseCluster> = Vec::new();
     for members in clusters_map.values() {
-        if members.len() < 2 { continue; }
-        let patterns: Vec<(i64, String, String)> = members.iter().map(|pid| {
-            let (group, tmpl) = pattern_meta.get(pid).cloned().unwrap_or_default();
-            (*pid, group, tmpl)
-        }).collect();
+        if members.len() < 2 {
+            continue;
+        }
+        let patterns: Vec<(i64, String, String)> = members
+            .iter()
+            .map(|pid| {
+                let (group, tmpl) = pattern_meta.get(pid).cloned().unwrap_or_default();
+                (*pid, group, tmpl)
+            })
+            .collect();
 
         let member_set: HashSet<i64> = members.iter().copied().collect();
         let mut shared: Vec<String> = Vec::new();
@@ -2242,7 +2798,10 @@ fn find_clusters(
             }
         }
 
-        clusters.push(RootCauseCluster { patterns, shared_values: shared });
+        clusters.push(RootCauseCluster {
+            patterns,
+            shared_values: shared,
+        });
     }
 
     clusters.sort_by(|a, b| b.patterns.len().cmp(&a.patterns.len()));
@@ -2254,25 +2813,33 @@ fn find_clusters(
     }
 
     if format == "json" {
-        let items: Vec<serde_json::Value> = clusters.iter().map(|c| {
-            serde_json::json!({
-                "patterns": c.patterns.iter().map(|(id, group, tmpl)| {
-                    serde_json::json!({"id": id, "group": group, "template": tmpl})
-                }).collect::<Vec<_>>(),
-                "shared_values": c.shared_values,
+        let items: Vec<serde_json::Value> = clusters
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "patterns": c.patterns.iter().map(|(id, group, tmpl)| {
+                        serde_json::json!({"id": id, "group": group, "template": tmpl})
+                    }).collect::<Vec<_>>(),
+                    "shared_values": c.shared_values,
+                })
             })
-        }).collect();
+            .collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
         println!("═══ Root-Cause Clusters (top {}) ═══\n", clusters.len());
         for (i, c) in clusters.iter().enumerate() {
             println!("  Cluster {} ({} patterns):", i + 1, c.patterns.len());
             if !c.shared_values.is_empty() {
-                let preview: Vec<&str> = c.shared_values.iter().take(5).map(|s| s.as_str()).collect();
+                let preview: Vec<&str> =
+                    c.shared_values.iter().take(5).map(|s| s.as_str()).collect();
                 println!("    Shared values: {}", preview.join(", "));
             }
             for (id, group, tmpl) in &c.patterns {
-                let preview = if tmpl.len() > 80 { format!("{}…", &tmpl[..80]) } else { tmpl.clone() };
+                let preview = if tmpl.len() > 80 {
+                    format!("{}…", &tmpl[..80])
+                } else {
+                    tmpl.clone()
+                };
                 println!("    [id={}, {}] {}", id, group, preview);
             }
             println!();
@@ -2301,7 +2868,9 @@ fn run_check(
         let anomalies = compute_anomalies(storage, group_filter, 1, &suppressed)?;
         let top_score = anomalies.first().map(|a| a.score).unwrap_or(0.0);
         let passed = top_score <= max_score;
-        if !passed { all_passed = false; }
+        if !passed {
+            all_passed = false;
+        }
         checks.push(serde_json::json!({
             "name": "max_anomaly_score",
             "threshold": max_score,
@@ -2316,7 +2885,9 @@ fn run_check(
             let diff = compute_diff(baseline_path, storage.db_path())?;
             let actual = diff.new_patterns.len();
             let passed = actual <= max_new;
-            if !passed { all_passed = false; }
+            if !passed {
+                all_passed = false;
+            }
             checks.push(serde_json::json!({
                 "name": "max_new_patterns",
                 "threshold": max_new,
@@ -2338,10 +2909,13 @@ fn run_check(
     if let Some(ref patterns) = fail_on_pattern {
         let all_patterns = storage.get_patterns_for_dedup(group_filter)?;
         for needle in patterns {
-            let found = all_patterns.iter()
+            let found = all_patterns
+                .iter()
                 .filter(|(id, _, _, _)| !suppressed.contains(id))
                 .any(|(_, tmpl, _, _)| tmpl.contains(needle.as_str()));
-            if found { all_passed = false; }
+            if found {
+                all_passed = false;
+            }
             checks.push(serde_json::json!({
                 "name": "fail_on_pattern",
                 "pattern": needle,
@@ -2366,22 +2940,42 @@ fn run_check(
             let icon = if passed { "✅" } else { "❌" };
             match name {
                 "max_anomaly_score" => {
-                    println!("  {} anomaly_score: {:.1} (threshold: {})",
-                        icon, check["actual"].as_f64().unwrap_or(0.0), check["threshold"]);
+                    println!(
+                        "  {} anomaly_score: {:.1} (threshold: {})",
+                        icon,
+                        check["actual"].as_f64().unwrap_or(0.0),
+                        check["threshold"]
+                    );
                 }
                 "max_new_patterns" => {
-                    println!("  {} new_patterns: {} (threshold: {})",
-                        icon, check["actual"], check["threshold"]);
+                    println!(
+                        "  {} new_patterns: {} (threshold: {})",
+                        icon, check["actual"], check["threshold"]
+                    );
                 }
                 "fail_on_pattern" => {
-                    println!("  {} pattern '{}': {}",
-                        icon, check["pattern"].as_str().unwrap_or(""),
-                        if check["found"].as_bool().unwrap_or(false) { "FOUND" } else { "not found" });
+                    println!(
+                        "  {} pattern '{}': {}",
+                        icon,
+                        check["pattern"].as_str().unwrap_or(""),
+                        if check["found"].as_bool().unwrap_or(false) {
+                            "FOUND"
+                        } else {
+                            "not found"
+                        }
+                    );
                 }
                 _ => {}
             }
         }
-        println!("\n{}", if all_passed { "✅ All checks passed" } else { "❌ Some checks failed" });
+        println!(
+            "\n{}",
+            if all_passed {
+                "✅ All checks passed"
+            } else {
+                "❌ Some checks failed"
+            }
+        );
     }
 
     Ok(all_passed)
@@ -2408,7 +3002,10 @@ fn compute_anomalies(
     }
 
     let patterns: Vec<_> = if !suppressed_ids.is_empty() {
-        patterns.into_iter().filter(|p| !suppressed_ids.contains(&p.0)).collect()
+        patterns
+            .into_iter()
+            .filter(|p| !suppressed_ids.contains(&p.0))
+            .collect()
     } else {
         patterns
     };
@@ -2424,13 +3021,20 @@ fn compute_anomalies(
     // Compute per-group stats for z-score
     let mut group_counts: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
     for (id, _, count, group) in &patterns {
-        group_counts.entry(group.clone()).or_default().push((*id, *count));
+        group_counts
+            .entry(group.clone())
+            .or_default()
+            .push((*id, *count));
     }
     let mut group_stats: HashMap<String, (f64, f64)> = HashMap::new();
     for (group, counts) in &group_counts {
         let n = counts.len() as f64;
         let mean = counts.iter().map(|(_, c)| *c as f64).sum::<f64>() / n;
-        let variance = counts.iter().map(|(_, c)| (*c as f64 - mean).powi(2)).sum::<f64>() / n;
+        let variance = counts
+            .iter()
+            .map(|(_, c)| (*c as f64 - mean).powi(2))
+            .sum::<f64>()
+            / n;
         group_stats.insert(group.clone(), (mean, variance.sqrt()));
     }
 
@@ -2483,7 +3087,11 @@ fn detect_anomalies(
     tags_file: Option<&str>,
     include_suppressed: bool,
 ) -> Result<()> {
-    let suppressed = if include_suppressed { HashSet::new() } else { load_suppressed_ids(tags_file) };
+    let suppressed = if include_suppressed {
+        HashSet::new()
+    } else {
+        load_suppressed_ids(tags_file)
+    };
     let anomalies = compute_anomalies(storage, group_filter, top, &suppressed)?;
 
     if anomalies.is_empty() {
@@ -2509,8 +3117,14 @@ fn detect_anomalies(
             } else {
                 a.template.replace('\n', "\\n")
             };
-            println!("  {}. [score={:.1}] {} (count={}, group={})",
-                i + 1, a.score, a.reasons.join("; "), a.count, a.group);
+            println!(
+                "  {}. [score={:.1}] {} (count={}, group={})",
+                i + 1,
+                a.score,
+                a.reasons.join("; "),
+                a.count,
+                a.group
+            );
             println!("     {}\n", preview);
         }
     }
@@ -2561,8 +3175,13 @@ fn derive_group_name(file_path: &str) -> String {
                 let year = &s[0..4];
                 let month = &s[4..6];
                 let day = &s[6..8];
-                if let (Ok(y), Ok(m), Ok(d)) = (year.parse::<u32>(), month.parse::<u32>(), day.parse::<u32>()) {
-                    if (1900..=2100).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d) {
+                if let (Ok(y), Ok(m), Ok(d)) = (
+                    year.parse::<u32>(),
+                    month.parse::<u32>(),
+                    day.parse::<u32>(),
+                ) {
+                    if (1900..=2100).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d)
+                    {
                         if bytes.len() == 8 || !bytes[8].is_ascii_digit() {
                             return Some(8);
                         }
@@ -2571,7 +3190,9 @@ fn derive_group_name(file_path: &str) -> String {
             }
             None
         });
-        if name == before { break; }
+        if name == before {
+            break;
+        }
     }
 
     // Strip trailing pure-numeric segments (e.g., .1, .2, .003)
@@ -2583,7 +3204,9 @@ fn derive_group_name(file_path: &str) -> String {
                 name = name[..dot_pos].to_string();
             }
         }
-        if name == before { break; }
+        if name == before {
+            break;
+        }
     }
 
     // Clean up: normalize separators to dots, collapse consecutive ones
@@ -2607,14 +3230,17 @@ fn derive_group_name(file_path: &str) -> String {
     // Strip trailing digits from segments (e.g., test2.log → test.log, server8080.log → server.log)
     // Only strip if it leaves a non-empty prefix in the segment.
     let segments: Vec<&str> = cleaned.split('.').collect();
-    let stripped: Vec<String> = segments.iter().map(|seg| {
-        let trimmed = seg.trim_end_matches(|c: char| c.is_ascii_digit());
-        if trimmed.is_empty() {
-            seg.to_string()
-        } else {
-            trimmed.to_string()
-        }
-    }).collect();
+    let stripped: Vec<String> = segments
+        .iter()
+        .map(|seg| {
+            let trimmed = seg.trim_end_matches(|c: char| c.is_ascii_digit());
+            if trimmed.is_empty() {
+                seg.to_string()
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .collect();
     // Dedup consecutive identical segments that arose from stripping
     let mut deduped = Vec::with_capacity(stripped.len());
     for seg in &stripped {
@@ -2625,7 +3251,11 @@ fn derive_group_name(file_path: &str) -> String {
     }
     let cleaned = deduped.join(".");
 
-    if cleaned.is_empty() { filename.to_string() } else { cleaned }
+    if cleaned.is_empty() {
+        filename.to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// Helper: finds and removes the first occurrence of a pattern detected by `detector`.
@@ -2645,7 +3275,11 @@ fn strip_pattern(input: &str, detector: impl Fn(&str) -> Option<usize>) -> Strin
 
 /// Groups file paths by their derived group name.
 /// Returns a BTreeMap (sorted by group name) of group_name → sorted file paths.
-fn group_files(file_paths: &[String], group_name_override: Option<&str>, stdin_paths: &HashSet<String>) -> BTreeMap<String, Vec<String>> {
+fn group_files(
+    file_paths: &[String],
+    group_name_override: Option<&str>,
+    stdin_paths: &HashSet<String>,
+) -> BTreeMap<String, Vec<String>> {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for path in file_paths {
         let group = if stdin_paths.contains(path) {
@@ -2669,7 +3303,10 @@ mod tests {
     fn test_derive_group_name_date_suffix() {
         assert_eq!(derive_group_name("error.log.2026-03-01"), "error.log");
         assert_eq!(derive_group_name("error.log.2026-03-02"), "error.log");
-        assert_eq!(derive_group_name("/var/log/error.log.2026-10-23"), "error.log");
+        assert_eq!(
+            derive_group_name("/var/log/error.log.2026-10-23"),
+            "error.log"
+        );
     }
 
     #[test]
@@ -2723,7 +3360,10 @@ mod tests {
         let groups = group_files(&files, None, &HashSet::new());
         assert_eq!(groups.len(), 2);
         assert_eq!(groups["access.log"], vec!["access.log", "access.log.1"]);
-        assert_eq!(groups["error.log"], vec!["error.log.2026-03-01", "error.log.2026-03-02"]);
+        assert_eq!(
+            groups["error.log"],
+            vec!["error.log.2026-03-01", "error.log.2026-03-02"]
+        );
     }
 
     #[test]
