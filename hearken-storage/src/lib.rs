@@ -251,35 +251,38 @@ impl Storage {
         if pattern_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let placeholders: Vec<String> = pattern_ids.iter().map(|_| "?".to_string()).collect();
-        let sql = format!(
-            "SELECT o.pattern_id, ls.file_path, COUNT(*) as cnt
-             FROM occurrences o
-             JOIN log_sources ls ON o.log_source_id = ls.id
-             WHERE o.pattern_id IN ({})
-             GROUP BY o.pattern_id, o.log_source_id
-             ORDER BY o.pattern_id, ls.file_path",
-            placeholders.join(", ")
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params: Vec<Box<dyn rusqlite::types::ToSql>> = pattern_ids.iter()
-            .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
-            .collect();
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter()
-            .map(|p| p.as_ref())
-            .collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
-        })?;
         let mut result: HashMap<i64, Vec<(String, i64)>> = HashMap::new();
-        for row in rows {
-            let (pid, path, cnt) = row?;
-            let file_name = std::path::Path::new(&path)
-                .file_name()
-                .and_then(|f| f.to_str())
-                .unwrap_or(&path)
-                .to_string();
-            result.entry(pid).or_default().push((file_name, cnt));
+        // SQLite has a variable limit (~999), so batch
+        for chunk in pattern_ids.chunks(500) {
+            let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "SELECT o.pattern_id, ls.file_path, COUNT(*) as cnt
+                 FROM occurrences o
+                 JOIN log_sources ls ON o.log_source_id = ls.id
+                 WHERE o.pattern_id IN ({})
+                 GROUP BY o.pattern_id, o.log_source_id
+                 ORDER BY o.pattern_id, ls.file_path",
+                placeholders.join(", ")
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params: Vec<Box<dyn rusqlite::types::ToSql>> = chunk.iter()
+                .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+                .collect();
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter()
+                .map(|p| p.as_ref())
+                .collect();
+            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            })?;
+            for row in rows {
+                let (pid, path, cnt) = row?;
+                let file_name = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or(&path)
+                    .to_string();
+                result.entry(pid).or_default().push((file_name, cnt));
+            }
         }
         Ok(result)
     }
@@ -312,6 +315,20 @@ impl Storage {
         let mut results = Vec::new();
         for row in rows { results.push(row?); }
         Ok(results)
+    }
+    /// Count source files per file group.
+    pub fn get_source_counts_per_group(&self) -> Result<HashMap<String, usize>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT fg.name, COUNT(ls.id) FROM log_sources ls \
+             JOIN file_groups fg ON ls.file_group_id = fg.id \
+             GROUP BY fg.name"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+        })?;
+        let mut result = HashMap::new();
+        for row in rows { let (g, c) = row?; result.insert(g, c); }
+        Ok(result)
     }
 }
 

@@ -100,6 +100,18 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Detect anomalous patterns (single-source or statistical outliers)
+    Anomalies {
+        /// Only check patterns from this file group
+        #[arg(long)]
+        group: Option<String>,
+        /// Maximum number of anomalies to display
+        #[arg(long, default_value_t = 50)]
+        top: usize,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -141,6 +153,9 @@ fn main() -> Result<()> {
                 bail!("--threshold must be between 0.0 and 1.0");
             }
             find_duplicates(&storage, threshold, group.as_deref(), &format)?;
+        }
+        Commands::Anomalies { group, top, format } => {
+            detect_anomalies(&storage, group.as_deref(), top, &format)?;
         }
     }
 
@@ -1117,6 +1132,116 @@ fn find_duplicates(
             println!();
         }
         println!("Found {} duplicate cluster(s) with {} similar pair(s) total.", all_clusters.len(), total_pairs);
+    }
+
+    Ok(())
+}
+
+fn detect_anomalies(
+    storage: &Storage,
+    group_filter: Option<&str>,
+    top: usize,
+    format: &str,
+) -> Result<()> {
+    let patterns = storage.get_patterns_for_dedup(group_filter)?;
+    if patterns.is_empty() {
+        println!("No patterns found in database.");
+        return Ok(());
+    }
+
+    let pattern_ids: Vec<i64> = patterns.iter().map(|p| p.0).collect();
+    let trends = storage.get_pattern_trends(&pattern_ids)?;
+    let source_counts = storage.get_source_counts_per_group()?;
+
+    struct Anomaly {
+        id: i64,
+        template: String,
+        count: i64,
+        group: String,
+        score: f64,
+        reasons: Vec<String>,
+    }
+
+    // Compute per-group stats for z-score
+    let mut group_counts: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new(); // group -> [(id, count)]
+    for (id, _, count, group) in &patterns {
+        group_counts.entry(group.clone()).or_default().push((*id, *count));
+    }
+    let mut group_stats: HashMap<String, (f64, f64)> = HashMap::new(); // group -> (mean, stddev)
+    for (group, counts) in &group_counts {
+        let n = counts.len() as f64;
+        let mean = counts.iter().map(|(_, c)| *c as f64).sum::<f64>() / n;
+        let variance = counts.iter().map(|(_, c)| (*c as f64 - mean).powi(2)).sum::<f64>() / n;
+        group_stats.insert(group.clone(), (mean, variance.sqrt()));
+    }
+
+    let mut anomalies: Vec<Anomaly> = Vec::new();
+
+    for (id, template, count, group) in &patterns {
+        let mut reasons = Vec::new();
+        let mut score = 0.0f64;
+
+        // Check single-source anomaly (pattern appears in only 1 source when group has >1)
+        let group_sources = source_counts.get(group).copied().unwrap_or(1);
+        let pattern_sources = trends.get(id).map(|t| t.len()).unwrap_or(1);
+        if group_sources > 1 && pattern_sources == 1 {
+            reasons.push(format!("single-source (1/{} files)", group_sources));
+            score += 2.0;
+        }
+
+        // Check z-score outlier
+        if let Some(&(mean, stddev)) = group_stats.get(group) {
+            if stddev > 0.0 {
+                let z = (*count as f64 - mean) / stddev;
+                if z > 3.0 {
+                    reasons.push(format!("high-count outlier (z={:.1})", z));
+                    score += z;
+                }
+            }
+        }
+
+        if !reasons.is_empty() {
+            anomalies.push(Anomaly {
+                id: *id,
+                template: template.clone(),
+                count: *count,
+                group: group.clone(),
+                score,
+                reasons,
+            });
+        }
+    }
+
+    anomalies.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    anomalies.truncate(top);
+
+    if anomalies.is_empty() {
+        println!("No anomalous patterns detected.");
+        return Ok(());
+    }
+
+    if format == "json" {
+        let items: Vec<String> = anomalies.iter().map(|a| {
+            let tmpl = a.template.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+            let reasons: Vec<String> = a.reasons.iter().map(|r| format!("\"{}\"", r)).collect();
+            format!(
+                "{{\"id\":{},\"group\":\"{}\",\"count\":{},\"anomaly_score\":{:.2},\"reasons\":[{}],\"template\":\"{}\"}}",
+                a.id, a.group, a.count, a.score, reasons.join(","), tmpl
+            )
+        }).collect();
+        println!("[{}]", items.join(",\n"));
+    } else {
+        println!("═══ Anomalous Patterns (top {}) ═══\n", anomalies.len());
+        for (i, a) in anomalies.iter().enumerate() {
+            let preview = if a.template.len() > 100 {
+                format!("{}…", &a.template[..100])
+            } else {
+                a.template.replace('\n', "\\n")
+            };
+            println!("  {}. [score={:.1}] {} (count={}, group={})",
+                i + 1, a.score, a.reasons.join("; "), a.count, a.group);
+            println!("     {}\n", preview);
+        }
     }
 
     Ok(())
