@@ -991,7 +991,8 @@ fn test_watch_detects_appended_content() {
     fs::write(&log_file, generate_log_lines(20, "WatchApp")).unwrap();
 
     // Start the watch command in a child process
-    let child = Command::new(cli_bin())
+    #[allow(unused_mut)]
+    let mut child = Command::new(cli_bin())
         .args([
             "-d",
             db_file.to_str().unwrap(),
@@ -1024,9 +1025,14 @@ fn test_watch_detects_appended_content() {
     // Give the watcher time to detect and process
     std::thread::sleep(std::time::Duration::from_secs(3));
 
-    // Kill the process (send SIGINT for clean shutdown)
+    // Kill the process
+    #[cfg(unix)]
     unsafe {
         libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
     }
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);

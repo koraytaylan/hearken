@@ -1266,12 +1266,19 @@ fn watch_files(
 }
 
 /// Set a flag to false on Ctrl+C (SIGINT).
+#[cfg(unix)]
 fn ctrlc_flag(flag: &Arc<std::sync::atomic::AtomicBool>) {
     let f = flag.clone();
     let _ = libc_sigint_handler(f);
 }
 
+#[cfg(not(unix))]
+fn ctrlc_flag(_flag: &Arc<std::sync::atomic::AtomicBool>) {
+    // On Windows, Ctrl+C is handled by the default handler which terminates the process.
+}
+
 /// Minimal SIGINT handler using raw libc — avoids adding a ctrlc crate dependency.
+#[cfg(unix)]
 fn libc_sigint_handler(flag: Arc<std::sync::atomic::AtomicBool>) -> Result<()> {
     use std::sync::atomic::Ordering;
     static mut RUNNING_FLAG: Option<*const std::sync::atomic::AtomicBool> = None;
