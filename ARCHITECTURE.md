@@ -256,10 +256,14 @@ During tokenization, all continuation lines are tokenized using the delimiter-aw
 │  Startup                                                   │
 │  1. Open/create DB                                         │
 │  2. Derive file groups from filenames                      │
-│  3. For each group:                                        │
+│  3. Pre-create file group IDs                              │
+│  4. If multiple groups: process groups in parallel threads │
+│     Each thread gets its own DB connection (WAL mode)      │
+│     If single group: process directly (no thread overhead) │
+│  5. Per group:                                             │
 │     a. Create LogParser, seed with group's DB patterns     │
 │     b. Process each file in sorted order (see below)       │
-│  4. Rebuild FTS5 index once at the end                     │
+│  6. Rebuild FTS5 index once at the end                     │
 └────────────────────────────────────────────────────────────┘
 
 Per-File Processing (shared LogParser within group):

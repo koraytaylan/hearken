@@ -13,6 +13,7 @@ pub enum StorageError {
 
 pub struct Storage {
     pub conn: Connection,
+    path: String,
 }
 
 impl Storage {
@@ -29,11 +30,11 @@ impl Storage {
              PRAGMA synchronous = OFF;
              PRAGMA cache_size = -1000000;
              PRAGMA temp_store = MEMORY;
-             PRAGMA locking_mode = EXCLUSIVE;
-             PRAGMA page_size = 16384;"
+             PRAGMA page_size = 16384;
+             PRAGMA busy_timeout = 30000;"
         )?;
 
-        let storage = Self { conn };
+        let storage = Self { conn, path: path.to_string() };
         storage.init_schema()?;
 
         Ok(storage)
@@ -86,6 +87,10 @@ impl Storage {
             ",
         )?;
         Ok(())
+    }
+
+    pub fn db_path(&self) -> &str {
+        &self.path
     }
 
     pub fn get_or_create_file_group(&self, name: &str) -> Result<i64, StorageError> {

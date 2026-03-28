@@ -326,63 +326,61 @@ fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, b
     }
     println!();
 
-    for (group_name, files) in &groups {
-        println!("═══ Processing group: {} ═══", group_name);
-        let file_group_id = storage.get_or_create_file_group(group_name)
-            .context("Failed to create file group")?;
+    // Pre-create file groups so IDs are available for parallel processing
+    let group_ids: Vec<(String, Vec<String>, i64)> = groups.iter().map(|(name, files)| {
+        let id = storage.get_or_create_file_group(name)
+            .expect("Failed to create file group");
+        (name.clone(), files.clone(), id)
+    }).collect();
 
-        let mut parser = LogParser::new(15, threshold);
-        let mut pattern_id_cache: HashMap<usize, i64> = HashMap::new();
-        let mut occurrence_counts: HashMap<usize, u64> = HashMap::new();
+    let db_path = storage.db_path().to_string();
 
-        // Seed parser from existing patterns for this group
-        {
-            let mut stmt = storage.conn.prepare(
-                "SELECT id, template FROM patterns WHERE file_group_id = ?"
-            )?;
-            let rows = stmt.query_map(rusqlite::params![file_group_id], |row| Ok(LogTemplate {
-                id: Some(row.get(0)?),
-                template: row.get(1)?,
-            }))?;
-            for row in rows {
-                let template = row?;
-                let db_id = template.id.unwrap();
-                let idx = parser.templates.len();
-                parser.add_template(template);
-                pattern_id_cache.insert(idx, db_id);
-            }
-        }
+    if group_ids.len() > 1 {
+        // Process groups in parallel, each with its own DB connection
+        println!("Processing {} groups in parallel...\n", group_ids.len());
+        let errors: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = group_ids.iter().map(|(group_name, files, file_group_id)| {
+                let db_path = db_path.clone();
+                let group_name = group_name.clone();
+                let files = files.clone();
+                let file_group_id = *file_group_id;
+                s.spawn(move || -> Result<()> {
+                    let mut thread_storage = Storage::open(&db_path)
+                        .context("Failed to open database in thread")?;
+                    process_group(
+                        &mut thread_storage, &group_name, &files,
+                        file_group_id, threshold, batch_size,
+                    )
+                })
+            }).collect();
 
-        for file_path in files {
-            process_file(
-                storage, file_path, file_group_id,
-                &mut parser, &mut pattern_id_cache, &mut occurrence_counts,
-                batch_size,
-            )?;
-        }
-
-        // Write occurrence counts and rebuild FTS for this group
-        println!("Writing pattern counts for group '{}'...", group_name);
-        {
-            let tx = storage.conn.transaction()?;
-            {
-                let mut update_stmt = tx.prepare("UPDATE patterns SET occurrence_count = ? WHERE id = ?")?;
-                for (template_idx, count) in &occurrence_counts {
-                    if let Some(&pattern_id) = pattern_id_cache.get(template_idx) {
-                        update_stmt.execute(rusqlite::params![*count as i64, pattern_id])?;
-                    }
+            handles.into_iter().filter_map(|h| {
+                match h.join() {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(format!("{:#}", e)),
+                    Err(_) => Some("thread panicked".to_string()),
                 }
-            }
-            tx.commit()?;
-        }
+            }).collect()
+        });
 
-        println!("Group '{}': {} patterns discovered.\n", group_name, parser.templates.len());
+        if !errors.is_empty() {
+            for err in &errors {
+                eprintln!("Error: {}", err);
+            }
+            bail!("{} group(s) failed to process", errors.len());
+        }
+    } else {
+        // Single group — process directly (no thread overhead)
+        for (group_name, files, file_group_id) in &group_ids {
+            process_group(storage, group_name, files, *file_group_id, threshold, batch_size)?;
+        }
     }
 
     // Rebuild FTS index once at the end
     println!("Rebuilding search index...");
     {
-        let tx = storage.conn.transaction()?;
+        let mut fts_storage = Storage::open(&db_path).context("Failed to reopen database")?;
+        let tx = fts_storage.conn.transaction()?;
         tx.execute("DELETE FROM patterns_fts", [])?;
         tx.execute(
             "INSERT INTO patterns_fts (pattern_id, template) SELECT id, template FROM patterns",
@@ -392,6 +390,65 @@ fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, b
     }
 
     println!("Done.");
+    Ok(())
+}
+
+fn process_group(
+    storage: &mut Storage,
+    group_name: &str,
+    files: &[String],
+    file_group_id: i64,
+    threshold: f64,
+    batch_size: usize,
+) -> Result<()> {
+    println!("═══ Processing group: {} ═══", group_name);
+
+    let mut parser = LogParser::new(15, threshold);
+    let mut pattern_id_cache: HashMap<usize, i64> = HashMap::new();
+    let mut occurrence_counts: HashMap<usize, u64> = HashMap::new();
+
+    // Seed parser from existing patterns for this group
+    {
+        let mut stmt = storage.conn.prepare(
+            "SELECT id, template FROM patterns WHERE file_group_id = ?"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![file_group_id], |row| Ok(LogTemplate {
+            id: Some(row.get(0)?),
+            template: row.get(1)?,
+        }))?;
+        for row in rows {
+            let template = row?;
+            let db_id = template.id.unwrap();
+            let idx = parser.templates.len();
+            parser.add_template(template);
+            pattern_id_cache.insert(idx, db_id);
+        }
+    }
+
+    for file_path in files {
+        process_file(
+            storage, file_path, file_group_id,
+            &mut parser, &mut pattern_id_cache, &mut occurrence_counts,
+            batch_size,
+        )?;
+    }
+
+    // Write occurrence counts
+    println!("Writing pattern counts for group '{}'...", group_name);
+    {
+        let tx = storage.conn.transaction()?;
+        {
+            let mut update_stmt = tx.prepare("UPDATE patterns SET occurrence_count = ? WHERE id = ?")?;
+            for (template_idx, count) in &occurrence_counts {
+                if let Some(&pattern_id) = pattern_id_cache.get(template_idx) {
+                    update_stmt.execute(rusqlite::params![*count as i64, pattern_id])?;
+                }
+            }
+        }
+        tx.commit()?;
+    }
+
+    println!("Group '{}': {} patterns discovered.\n", group_name, parser.templates.len());
     Ok(())
 }
 

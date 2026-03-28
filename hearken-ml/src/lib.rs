@@ -57,11 +57,13 @@ impl InternalTemplate {
     }
 }
 
+#[derive(Clone)]
 enum Node {
     Internal(HashMap<String, Node>),
     Leaf(Vec<usize>), // Indices into LogParser.templates
 }
 
+#[derive(Clone)]
 pub struct LogParser {
     max_depth: usize,
     similarity_threshold: f64,
