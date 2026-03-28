@@ -328,6 +328,7 @@ dependencies = [
  "rayon",
  "rusqlite",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
