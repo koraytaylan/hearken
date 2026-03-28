@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hearken Report</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f8f9fb;--surface:#fff;--surface-alt:#f1f3f6;
+  --border:#e2e5ea;--text:#1a1d23;--text-secondary:#5f6672;
+  --accent:#4f6ef7;--accent-light:#eef1fe;--accent-dark:#3b54c4;
+  --green:#22c55e;--green-bg:#ecfdf5;
+  --orange:#f59e0b;--orange-bg:#fffbeb;
+  --red:#ef4444;--red-bg:#fef2f2;
+  --radius:8px;--shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.04);
+  --shadow-lg:0 4px 12px rgba(0,0,0,.1),0 2px 4px rgba(0,0,0,.06);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+  background:var(--bg);color:var(--text);line-height:1.6;padding:0}
+.container{max-width:1400px;margin:0 auto;padding:24px 32px}
+
+/* Header */
+.header{background:linear-gradient(135deg,#1e293b 0%,#334155 100%);color:#fff;padding:40px 32px 32px;margin-bottom:32px}
+.header h1{font-size:28px;font-weight:700;letter-spacing:-.5px;display:flex;align-items:center;gap:12px}
+.header h1 span{font-size:32px}
+.header-meta{margin-top:12px;font-size:14px;color:#94a3b8;display:flex;flex-wrap:wrap;gap:24px}
+.header-meta span{display:flex;align-items:center;gap:6px}
+
+/* Summary Cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:32px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:24px;box-shadow:var(--shadow);transition:box-shadow .15s}
+.card:hover{box-shadow:var(--shadow-lg)}
+.card-label{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-secondary);margin-bottom:8px}
+.card-value{font-size:32px;font-weight:700;color:var(--text)}
+.card-sub{font-size:13px;color:var(--text-secondary);margin-top:4px}
+.card.accent .card-value{color:var(--accent)}
+.card.green .card-value{color:var(--green)}
+.card.orange .card-value{color:var(--orange)}
+
+/* Toolbar */
+.toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:16px}
+.search-box{flex:1;min-width:280px;position:relative}
+.search-box input{width:100%;padding:10px 14px 10px 40px;border:1px solid var(--border);border-radius:var(--radius);
+  font-size:14px;background:var(--surface);transition:border-color .15s,box-shadow .15s;outline:none}
+.search-box input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-light)}
+.search-box svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary)}
+.toolbar-info{font-size:13px;color:var(--text-secondary)}
+
+/* Table */
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow);overflow:hidden}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+thead{background:var(--surface-alt);position:sticky;top:0;z-index:2}
+th{padding:12px 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--text-secondary);text-align:left;border-bottom:2px solid var(--border);cursor:pointer;
+  user-select:none;white-space:nowrap}
+th:hover{color:var(--accent)}
+th .sort-arrow{margin-left:4px;opacity:.4;font-size:10px}
+th.sorted .sort-arrow{opacity:1;color:var(--accent)}
+td{padding:12px 16px;border-bottom:1px solid var(--border);font-size:14px;vertical-align:top}
+tr.data-row{cursor:pointer;transition:background .1s}
+tr.data-row:hover{background:var(--accent-light)}
+tr:last-child td{border-bottom:none}
+.rank-cell{font-weight:600;color:var(--text-secondary);width:60px;white-space:nowrap}
+.count-cell{font-weight:600;font-variant-numeric:tabular-nums;width:120px;text-align:right}
+.pct-cell{width:80px;text-align:right;color:var(--text-secondary)}
+.template-cell{font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;
+  font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0}
+.wildcard{color:var(--accent);font-weight:600}
+.group-cell{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Detail row */
+tr.detail-row{display:none}
+tr.detail-row.open{display:table-row}
+tr.detail-row td{padding:0;background:var(--surface-alt)}
+.detail-content{padding:20px 24px;animation:slideDown .2s ease-out}
+@keyframes slideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+.detail-section{margin-bottom:16px}
+.detail-section:last-child{margin-bottom:0}
+.detail-label{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--text-secondary);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+/* Section expand icon (reusable) */
+.section-icon{display:inline-block;width:16px;text-align:center;font-size:12px;
+  color:var(--text-secondary);transition:transform .2s;flex-shrink:0}
+
+/* Collapsible content block (used by template + each sample) */
+.collapsible{cursor:pointer;transition:all .15s}
+.collapsible .col-preview{font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;
+  font-size:13px;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:10px 16px;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;display:flex;align-items:center;gap:8px}
+.collapsible .col-preview:hover{border-color:var(--accent);background:var(--accent-light)}
+.collapsible .col-full{display:none;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;
+  font-size:13px;line-height:1.7;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:16px;padding-left:40px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;
+  position:relative}
+.collapsible .col-full .section-icon{position:absolute;left:14px;top:16px}
+.collapsible.open .col-preview{display:none}
+.collapsible.open .col-full{display:block}
+.collapsible.open .section-icon{transform:rotate(90deg);color:var(--accent)}
+
+/* Sample-specific overrides */
+.samples-list{display:flex;flex-direction:column;gap:8px}
+.collapsible.sample .col-preview{font-size:12px;color:var(--accent-dark)}
+.collapsible.sample .col-full{font-size:12px;color:var(--accent-dark)}
+.sample-source{font-size:10px;color:var(--text-secondary);font-family:-apple-system,sans-serif;margin-top:4px}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid var(--border);
+  border-radius:6px;font-size:12px;font-weight:500;background:var(--surface);color:var(--text);
+  cursor:pointer;transition:all .15s}
+.btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-light)}
+.btn.copied{border-color:var(--green);color:var(--green);background:var(--green-bg)}
+
+/* Bar chart */
+.bar-bg{width:100%;height:6px;background:var(--surface-alt);border-radius:3px;overflow:hidden}
+.bar-fill{height:100%;background:var(--accent);border-radius:3px;transition:width .3s ease}
+
+/* Expand indicator */
+.expand-icon{display:inline-block;width:16px;height:16px;text-align:center;font-size:12px;
+  color:var(--text-secondary);transition:transform .2s}
+tr.data-row.open .expand-icon{transform:rotate(90deg);color:var(--accent)}
+
+/* Responsive */
+@media(max-width:768px){
+  .container{padding:16px}
+  .header{padding:24px 16px 20px}
+  .header h1{font-size:22px}
+  .cards{grid-template-columns:1fr 1fr}
+  .template-cell{max-width:200px}
+}
+
+/* Empty state */
+.empty-state{text-align:center;padding:64px 24px;color:var(--text-secondary)}
+.empty-state svg{margin-bottom:16px;opacity:.4}
+.empty-state p{font-size:16px}
+
+/* Footer */
+.footer{text-align:center;padding:32px;font-size:12px;color:var(--text-secondary)}
+.footer-command{font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;
+  font-size:11px;color:var(--text-secondary);opacity:.6;margin-top:6px;word-break:break-all}
+
+/* Suppressed patterns */
+tr.suppressed{opacity:0.4}
+tr.suppressed td:nth-child(3){text-decoration:line-through}
+tr.suppressed:not(.show-suppressed){display:none}
+
+/* Parameter pills */
+.params{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.pill{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;
+  background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.15);
+  border-radius:20px;font-size:12px;color:#cbd5e1}
+.pill strong{color:#e2e8f0;font-weight:600}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="container" style="padding-top:0;padding-bottom:0">
+    <h1><span>👂</span> Hearken Report</h1>
+    <div class="header-meta" id="header-meta"></div>
+    <div class="params" id="header-params"></div>
+  </div>
+</div>
+
+<div class="container">
+  <div class="cards" id="summary-cards"></div>
+
+  <div id="timeline-chart" style="display:none;margin-bottom:24px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="font-size:16px;font-weight:600">📊 Source File Distribution</h3>
+      <span id="timeline-toggle" style="cursor:pointer;font-size:13px;color:var(--accent)">▼ Collapse</span>
+    </div>
+    <div id="timeline-svg-wrap"></div>
+    <div id="timeline-legend" style="margin-top:8px;font-size:12px;color:var(--text-secondary);display:flex;flex-wrap:wrap;gap:12px"></div>
+  </div>
+
+  <div class="toolbar">
+    <div class="search-box">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M11 11l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <input type="text" id="search" placeholder="Search patterns..." autocomplete="off">
+    </div>
+    <select id="group-filter" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;background:var(--surface);cursor:pointer">
+      <option value="">All groups</option>
+    </select>
+    <select id="tag-filter" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;background:var(--surface);cursor:pointer">
+      <option value="">All tags</option>
+      <option value="__tagged__">Tagged only</option>
+      <option value="__untagged__">Untagged only</option>
+    </select>
+    <button id="download-tags" style="padding:8px 16px;border:1px solid var(--accent);border-radius:var(--radius);font-size:13px;background:var(--accent-light);color:var(--accent-dark);cursor:pointer;font-weight:500" title="Download tags as JSON">🏷️ Export Tags</button>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="showSuppressed" onchange="applyFilters()"> Show suppressed
+    </label>
+    <div class="toolbar-info" id="toolbar-info"></div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="rank" class="sorted" style="width:50px"># <span class="sort-arrow">▲</span></th>
+          <th data-sort="group" style="width:120px">Group <span class="sort-arrow">▲</span></th>
+          <th data-sort="template">Pattern Template <span class="sort-arrow">▲</span></th>
+          <th data-sort="count" style="width:120px;text-align:right">Count <span class="sort-arrow">▲</span></th>
+          <th data-sort="pct" style="width:100px;text-align:right">Share <span class="sort-arrow">▲</span></th>
+          <th style="width:120px">Distribution</th>
+          <th style="width:140px">Trend</th>
+          <th style="width:160px">Tags</th>
+        </tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+  </div>
+
+  <div class="empty-state" id="empty-state" style="display:none">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="1.5"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <p>No patterns match your search</p>
+  </div>
+</div>
+
+<div class="footer">
+  Generated by <strong>Hearken</strong> — Unsupervised Log Pattern Discovery
+  <div class="footer-command" id="footer-command"></div>
+</div>
+
+<script>
+const DATA = /*__REPORT_DATA__*/;
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function highlightWildcards(template) {
+  return escapeHtml(template).replace(/&lt;\*&gt;/g, '<span class="wildcard">&lt;*&gt;</span>');
+}
+
+function formatNumber(n) {
+  return n.toLocaleString();
+}
+
+function truncate(s, max) {
+  const first = s.split('\n')[0];
+  return first.length > max ? first.substring(0, max) + '…' : first;
+}
+function renderSparkline(trend) {
+  if (!trend || trend.length === 0) return '<span style="color:#999">—</span>';
+  const maxVal = Math.max(...trend.map(t => t.count));
+  if (maxVal === 0) return '<span style="color:#999">—</span>';
+  const isTimeBased = trend[0].bucket !== undefined;
+  const w = 120, h = 24, barGap = 1;
+  const barW = Math.max(2, Math.floor((w - (trend.length - 1) * barGap) / trend.length));
+  let svg = `<svg width="${w}" height="${h}" style="vertical-align:middle" title="${trend.map(t => (isTimeBased ? t.bucket : t.source) + ': ' + t.count).join(', ')}">`;
+  trend.forEach((t, i) => {
+    const barH = Math.max(1, (t.count / maxVal) * h);
+    const x = i * (barW + barGap);
+    const y = h - barH;
+    const label = isTimeBased ? t.bucket : escapeHtml(t.source);
+    svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${isTimeBased ? '#06b6d4' : '#4f6ef7'}" opacity="0.8"><title>${label}: ${formatNumber(t.count)}</title></rect>`;
+  });
+  svg += '</svg>';
+  return svg;
+}
+
+// Tags management
+const patternTags = DATA.tags && typeof DATA.tags === 'object' ? {...DATA.tags} : {};
+
+function getTagsForPattern(id) {
+  return patternTags[String(id)] || [];
+}
+function renderTags(id) {
+  const tags = getTagsForPattern(id);
+  const isSuppressed = tags.includes('suppress') || tags.includes('ignore');
+  const suppressBtn = isSuppressed ? '' :
+    `<span onclick="event.stopPropagation();addTag(${id},'suppress');applyFilters();" style="cursor:pointer;font-size:13px;opacity:0.4;margin-left:2px" title="Suppress this pattern">🔇</span>`;
+  return tags.map(t =>
+    `<span style="display:inline-flex;align-items:center;gap:2px;font-size:11px;padding:1px 6px;background:var(--accent-light);color:var(--accent-dark);border-radius:10px;white-space:nowrap">${escapeHtml(t)}<span onclick="event.stopPropagation();removeTag(${id},'${escapeHtml(t)}');applyFilters();" style="cursor:pointer;font-size:13px;line-height:1;margin-left:2px" title="Remove tag">×</span></span>`
+  ).join(' ') + ' ' + suppressBtn;
+}
+function addTag(id, tag) {
+  tag = tag.trim();
+  if (!tag) return;
+  const key = String(id);
+  if (!patternTags[key]) patternTags[key] = [];
+  if (!patternTags[key].includes(tag)) patternTags[key].push(tag);
+  refreshTagsUI(id);
+  refreshTagFilter();
+}
+function removeTag(id, tag) {
+  const key = String(id);
+  if (!patternTags[key]) return;
+  patternTags[key] = patternTags[key].filter(t => t !== tag);
+  if (patternTags[key].length === 0) delete patternTags[key];
+  refreshTagsUI(id);
+  refreshTagFilter();
+}
+function refreshTagsUI(id) {
+  const cell = document.querySelector(`.tags-cell[data-id="${id}"]`);
+  if (cell) {
+    const input = cell.querySelector('.tag-input');
+    cell.innerHTML = renderTags(id) + input.outerHTML;
+    const newInput = cell.querySelector('.tag-input');
+    newInput.onkeydown = function(event) {
+      if (event.key === 'Enter') { addTag(id, this.value); this.value = ''; event.stopPropagation(); }
+    };
+  }
+}
+function refreshTagFilter() {
+  const sel = document.getElementById('tag-filter');
+  const allTags = new Set();
+  Object.values(patternTags).forEach(tags => tags.forEach(t => allTags.add(t)));
+  const current = sel.value;
+  const opts = ['<option value="">All tags</option>',
+    '<option value="__tagged__">Tagged only</option>',
+    '<option value="__untagged__">Untagged only</option>'];
+  [...allTags].sort().forEach(t => opts.push(`<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`));
+  sel.innerHTML = opts.join('');
+  sel.value = current;
+}
+function downloadTags() {
+  const json = JSON.stringify(patternTags, null, 2);
+  const blob = new Blob([json], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'hearken-tags.json'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Render header
+const meta = document.getElementById('header-meta');
+const metaParts = [];
+const fileSizeBytes = parseInt(document.body.dataset.fileSize || '0', 10);
+if (fileSizeBytes > 0) {
+  const sizeStr = fileSizeBytes >= 1048576
+    ? (fileSizeBytes / 1048576).toFixed(1) + ' MB'
+    : (fileSizeBytes / 1024).toFixed(1) + ' KB';
+  metaParts.push(`<span>📦 ${sizeStr}</span>`);
+}
+if (DATA.sources && DATA.sources.length > 0) {
+  metaParts.push(`<span>📄 ${escapeHtml(DATA.sources.join(', '))}</span>`);
+}
+if (DATA.generated_at) {
+  metaParts.push(`<span>🕐 ${escapeHtml(DATA.generated_at)}</span>`);
+}
+meta.innerHTML = metaParts.join('');
+
+// Render parameter pills
+const params = document.getElementById('header-params');
+const pills = [];
+if (DATA.params) {
+  pills.push(`<span class="pill">Top <strong>${DATA.params.top}</strong> patterns</span>`);
+  pills.push(`<span class="pill"><strong>${DATA.params.samples}</strong> samples each</span>`);
+  if (DATA.params.filter && DATA.params.filter.length > 0) {
+    pills.push(`<span class="pill">Filter: <strong>${escapeHtml(DATA.params.filter.join(', '))}</strong></span>`);
+  }
+  if (DATA.params.group && DATA.params.group.length > 0) {
+    pills.push(`<span class="pill">Group: <strong>${escapeHtml(DATA.params.group.join(', '))}</strong></span>`);
+  }
+}
+if (DATA.file_groups && DATA.file_groups.length > 0) {
+  pills.push(`<span class="pill"><strong>${DATA.file_groups.length}</strong> file group(s)</span>`);
+}
+params.innerHTML = pills.join('');
+
+// Populate group filter dropdown
+const groupSelect = document.getElementById('group-filter');
+if (DATA.file_groups) {
+  DATA.file_groups.forEach(g => {
+    const opt = document.createElement('option');
+    opt.value = g.name;
+    opt.textContent = `${g.name} (${formatNumber(g.pattern_count)})`;
+    groupSelect.appendChild(opt);
+  });
+}
+if (!DATA.file_groups || DATA.file_groups.length <= 1) {
+  groupSelect.style.display = 'none';
+}
+
+// Render command in footer
+if (DATA.command) {
+  document.getElementById('footer-command').textContent = '$ ' + DATA.command;
+}
+
+// Render summary cards
+const cards = document.getElementById('summary-cards');
+const maxCount = DATA.patterns.length > 0 ? DATA.patterns[0].count : 0;
+cards.innerHTML = `
+  <div class="card accent">
+    <div class="card-label">Total Patterns</div>
+    <div class="card-value">${formatNumber(DATA.pattern_count)}</div>
+    <div class="card-sub">Unique log templates discovered</div>
+  </div>
+  <div class="card green">
+    <div class="card-label">Total Occurrences</div>
+    <div class="card-value">${formatNumber(DATA.total_occurrences)}</div>
+    <div class="card-sub">Log entries matched to patterns</div>
+  </div>
+  <div class="card orange">
+    <div class="card-label">Top Pattern</div>
+    <div class="card-value">${maxCount > 0 ? formatNumber(maxCount) : '—'}</div>
+    <div class="card-sub">${maxCount > 0 ? (maxCount / DATA.total_occurrences * 100).toFixed(1) + '% of all entries' : 'No patterns yet'}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Sources Processed</div>
+    <div class="card-value">${DATA.sources ? DATA.sources.length : 0}</div>
+    <div class="card-sub">${DATA.has_timestamps ? '⏱ Timestamps: detected' : 'Timestamps: none'}</div>
+  </div>
+`;
+
+// State
+let sortCol = 'rank';
+let sortAsc = true;
+let filtered = [...DATA.patterns];
+
+// Timeline Chart
+function renderTimeline() {
+  const container = document.getElementById('timeline-chart');
+  const wrap = document.getElementById('timeline-svg-wrap');
+  const legend = document.getElementById('timeline-legend');
+  if (!DATA.patterns.length || !DATA.patterns.some(p => p.trend && p.trend.length > 1)) return;
+
+  container.style.display = 'block';
+  const toggle = document.getElementById('timeline-toggle');
+  let collapsed = false;
+  toggle.onclick = () => {
+    collapsed = !collapsed;
+    wrap.style.display = collapsed ? 'none' : 'block';
+    legend.style.display = collapsed ? 'none' : 'flex';
+    toggle.textContent = collapsed ? '▶ Expand' : '▼ Collapse';
+  };
+
+  const isTimeBased = DATA.has_timestamps && DATA.patterns.some(p => p.trend && p.trend.length > 0 && p.trend[0].bucket);
+
+  if (isTimeBased) {
+    // Time-series chart: X-axis = time buckets, stacked bars for top patterns
+    const buckets = new Set();
+    DATA.patterns.forEach(p => { if (p.trend) p.trend.forEach(t => { if (t.bucket) buckets.add(t.bucket); }); });
+    const bucketList = [...buckets].sort();
+    if (bucketList.length < 2) return;
+
+    const topN = DATA.patterns.slice(0, 10);
+    const colors = ['#4f6ef7','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1'];
+    const W = Math.min(900, bucketList.length * 60 + 100), H = 260;
+    const margin = {top:20,right:20,bottom:70,left:70};
+    const cw = W - margin.left - margin.right;
+    const ch = H - margin.top - margin.bottom;
+    const barW = Math.max(8, Math.min(36, cw / bucketList.length - 4));
+
+    const maxStack = bucketList.map(b => {
+      let total = 0;
+      topN.forEach(p => {
+        const t = (p.trend||[]).find(t => t.bucket === b);
+        total += t ? t.count : 0;
+      });
+      return total;
+    });
+    const maxVal = Math.max(...maxStack, 1);
+
+    let svg = `<svg width="${W}" height="${H}" style="display:block;max-width:100%">`;
+    for (let i = 0; i <= 4; i++) {
+      const y = margin.top + ch - (i/4)*ch;
+      const val = Math.round(maxVal * i/4);
+      svg += `<line x1="${margin.left}" y1="${y}" x2="${W-margin.right}" y2="${y}" stroke="#e2e5ea" stroke-width="0.5"/>`;
+      svg += `<text x="${margin.left-8}" y="${y+4}" text-anchor="end" font-size="11" fill="#5f6672">${formatNumber(val)}</text>`;
+    }
+
+    bucketList.forEach((b, bi) => {
+      const x = margin.left + bi * (cw / bucketList.length) + (cw / bucketList.length - barW) / 2;
+      let cumY = 0;
+      topN.forEach((p, pi) => {
+        const t = (p.trend||[]).find(t => t.bucket === b);
+        const val = t ? t.count : 0;
+        if (val === 0) return;
+        const barH = (val / maxVal) * ch;
+        const y = margin.top + ch - cumY - barH;
+        svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${colors[pi % colors.length]}" opacity="0.85" rx="2">`;
+        svg += `<title>${escapeHtml(truncate(p.template,60))}\n${b}: ${formatNumber(val)}</title></rect>`;
+        cumY += barH;
+      });
+      const lx = x + barW/2;
+      const shortB = b.length > 16 ? b.substring(0,14)+'…' : b;
+      svg += `<text x="${lx}" y="${H-margin.bottom+16}" text-anchor="middle" font-size="10" fill="#5f6672" transform="rotate(-40,${lx},${H-margin.bottom+16})">${escapeHtml(shortB)}</text>`;
+    });
+    svg += '</svg>';
+    wrap.innerHTML = svg;
+
+    legend.innerHTML = topN.map((p, i) =>
+      `<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:2px;background:${colors[i%colors.length]};display:inline-block"></span>${escapeHtml(truncate(p.template,50))}</span>`
+    ).join('');
+  } else {
+    // Per-source chart (original behavior): use distribution if available, else trend
+    const sources = new Set();
+    DATA.patterns.forEach(p => {
+      const d = p.distribution || p.trend || [];
+      d.forEach(t => { if (t.source) sources.add(t.source); });
+    });
+    const srcList = [...sources].sort();
+    if (srcList.length < 2) return;
+
+    const topN = DATA.patterns.slice(0, 10);
+    const colors = ['#4f6ef7','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1'];
+    const W = Math.min(900, srcList.length * 80 + 100), H = 260;
+    const margin = {top:20,right:20,bottom:60,left:70};
+    const cw = W - margin.left - margin.right;
+    const ch = H - margin.top - margin.bottom;
+    const barW = Math.max(12, Math.min(40, cw / srcList.length - 4));
+
+    const maxStack = srcList.map(src => {
+      let total = 0;
+      topN.forEach(p => {
+        const d = p.distribution || p.trend || [];
+        const t = d.find(t => t.source === src);
+        total += t ? t.count : 0;
+      });
+      return total;
+    });
+    const maxVal = Math.max(...maxStack, 1);
+
+    let svg = `<svg width="${W}" height="${H}" style="display:block;max-width:100%">`;
+    for (let i = 0; i <= 4; i++) {
+      const y = margin.top + ch - (i/4)*ch;
+      const val = Math.round(maxVal * i/4);
+      svg += `<line x1="${margin.left}" y1="${y}" x2="${W-margin.right}" y2="${y}" stroke="#e2e5ea" stroke-width="0.5"/>`;
+      svg += `<text x="${margin.left-8}" y="${y+4}" text-anchor="end" font-size="11" fill="#5f6672">${formatNumber(val)}</text>`;
+    }
+
+    srcList.forEach((src, si) => {
+      const x = margin.left + si * (cw / srcList.length) + (cw / srcList.length - barW) / 2;
+      let cumY = 0;
+      topN.forEach((p, pi) => {
+        const d = p.distribution || p.trend || [];
+        const t = d.find(t => t.source === src);
+        const val = t ? t.count : 0;
+        if (val === 0) return;
+        const barH = (val / maxVal) * ch;
+        const y = margin.top + ch - cumY - barH;
+        svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${colors[pi % colors.length]}" opacity="0.85" rx="2">`;
+        svg += `<title>${escapeHtml(truncate(p.template,60))}\n${src}: ${formatNumber(val)}</title></rect>`;
+        cumY += barH;
+      });
+      const lx = x + barW/2;
+      const shortSrc = src.length > 20 ? src.substring(0,18)+'…' : src;
+      svg += `<text x="${lx}" y="${H-margin.bottom+16}" text-anchor="middle" font-size="11" fill="#5f6672" transform="rotate(-30,${lx},${H-margin.bottom+16})">${escapeHtml(shortSrc)}</text>`;
+    });
+    svg += '</svg>';
+    wrap.innerHTML = svg;
+
+    legend.innerHTML = topN.map((p, i) =>
+      `<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:2px;background:${colors[i%colors.length]};display:inline-block"></span>${escapeHtml(truncate(p.template,50))}</span>`
+    ).join('');
+  }
+}
+renderTimeline();
+
+function renderTable() {
+  const tbody = document.getElementById('table-body');
+  const emptyEl = document.getElementById('empty-state');
+  const infoEl = document.getElementById('toolbar-info');
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = '';
+    emptyEl.style.display = 'block';
+    infoEl.textContent = '0 patterns';
+    return;
+  }
+  emptyEl.style.display = 'none';
+  infoEl.textContent = `${formatNumber(filtered.length)} of ${formatNumber(DATA.patterns.length)} patterns`;
+
+  const maxC = filtered[0] ? Math.max(...filtered.map(p => p.count)) : 1;
+  let html = '';
+  const showSuppressed = document.getElementById('showSuppressed').checked;
+  filtered.forEach((p, i) => {
+    const pct = DATA.total_occurrences > 0 ? (p.count / DATA.total_occurrences * 100) : 0;
+    const barW = maxC > 0 ? (p.count / maxC * 100) : 0;
+    const rid = `row-${p.id}`;
+    const ptags = getTagsForPattern(p.id);
+    const isSuppressed = ptags.includes('suppress') || ptags.includes('ignore') || p.suppressed;
+    const suppressedClass = isSuppressed ? ' suppressed' + (showSuppressed ? ' show-suppressed' : '') : '';
+    html += `<tr class="data-row${suppressedClass}" data-id="${p.id}" onclick="toggleDetail(${p.id})">
+      <td class="rank-cell"><span class="expand-icon">›</span> ${i + 1}</td>
+      <td class="group-cell" title="${escapeHtml(p.group || '')}">${escapeHtml(p.group || '—')}</td>
+      <td class="template-cell" title="${escapeHtml(p.template.split('\\n')[0])}">${highlightWildcards(truncate(p.template, 120))}</td>
+      <td class="count-cell">${formatNumber(p.count)}</td>
+      <td class="pct-cell">${pct.toFixed(1)}%</td>
+      <td><div class="bar-bg"><div class="bar-fill" style="width:${barW}%"></div></div></td>
+      <td>${renderSparkline(p.trend)}</td>
+      <td class="tags-cell" data-id="${p.id}" onclick="event.stopPropagation()">
+        ${renderTags(p.id)}
+        <input type="text" class="tag-input" placeholder="+ tag" data-id="${p.id}"
+          style="width:60px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--surface)"
+          onkeydown="if(event.key==='Enter'){addTag(${p.id},this.value);this.value='';event.stopPropagation();}">
+      </td>
+    </tr>
+    <tr class="detail-row" id="detail-${p.id}">
+      <td colspan="8">
+        <div class="detail-content">
+          <div class="detail-section">
+            <div class="detail-label">Pattern Template
+              <button class="btn" onclick="event.stopPropagation();copyPattern(${p.id});" id="copy-${p.id}">
+                📋 Copy
+              </button>
+            </div>
+            <div class="collapsible" id="tmpl-${p.id}" onclick="event.stopPropagation();toggleCollapsible('tmpl-${p.id}');">
+              <div class="col-preview"><span class="section-icon">›</span><span>${highlightWildcards(truncate(p.template, 200))}</span></div>
+              <div class="col-full"><span class="section-icon">›</span>${highlightWildcards(p.template)}</div>
+            </div>
+          </div>
+          ${p.samples && p.samples.length > 0 ? `
+          <div class="detail-section">
+            <div class="detail-label">Sample Occurrences (${p.samples.length})</div>
+            <div class="samples-list">
+              ${p.samples.map((s, si) => {
+                const txt = typeof s === 'object' ? s.text : s;
+                const src = typeof s === 'object' ? s.source : '';
+                return `<div class="collapsible sample" id="sample-${p.id}-${si}" onclick="event.stopPropagation();toggleCollapsible('sample-${p.id}-${si}');">
+                <div class="col-preview"><span class="section-icon">›</span><span>${escapeHtml(truncate(txt, 200))}</span></div>
+                <div class="col-full"><span class="section-icon">›</span>${escapeHtml(txt)}${src ? `<div class="sample-source">📄 ${escapeHtml(src)}</div>` : ''}</div>
+              </div>`;
+              }).join('')}
+            </div>
+          </div>` : ''}
+        </div>
+      </td>
+    </tr>`;
+  });
+  tbody.innerHTML = html;
+}
+
+function toggleDetail(id) {
+  const row = document.querySelector(`tr.data-row[data-id="${id}"]`);
+  const detail = document.getElementById(`detail-${id}`);
+  if (!row || !detail) return;
+  const open = detail.classList.toggle('open');
+  row.classList.toggle('open', open);
+}
+
+function toggleCollapsible(elId) {
+  const el = document.getElementById(elId);
+  if (el) el.classList.toggle('open');
+}
+
+function copyPattern(id) {
+  const p = DATA.patterns.find(x => x.id === id);
+  if (!p) return;
+  let text = `Pattern #${id} (${formatNumber(p.count)} occurrences)`;
+  if (p.group) text += ` [${p.group}]`;
+  text += '\n' + '─'.repeat(50) + '\n';
+  text += p.template + '\n';
+  if (p.samples && p.samples.length > 0) {
+    text += '\nSample occurrences:\n';
+    p.samples.forEach((s, i) => {
+      const txt = typeof s === 'object' ? s.text : s;
+      const src = typeof s === 'object' ? s.source : '';
+      text += `  ${i + 1}. ${txt}${src ? ' [' + src + ']' : ''}\n`;
+    });
+  }
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById(`copy-${id}`);
+    btn.classList.add('copied');
+    btn.innerHTML = '✓ Copied';
+    setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = '📋 Copy'; }, 2000);
+  });
+}
+
+// Search + Group filter
+const searchInput = document.getElementById('search');
+const groupFilterSelect = document.getElementById('group-filter');
+const tagFilterSelect = document.getElementById('tag-filter');
+let searchTimeout;
+
+function applyFilters() {
+  const q = searchInput.value.toLowerCase().trim();
+  const groupVal = groupFilterSelect.value;
+  const tagVal = tagFilterSelect.value;
+  const showSuppressed = document.getElementById('showSuppressed').checked;
+  let result = [...DATA.patterns];
+  if (q) {
+    result = result.filter(p => p.template.toLowerCase().includes(q));
+  }
+  if (groupVal) {
+    result = result.filter(p => p.group === groupVal);
+  }
+  if (tagVal === '__tagged__') {
+    result = result.filter(p => getTagsForPattern(p.id).length > 0);
+  } else if (tagVal === '__untagged__') {
+    result = result.filter(p => getTagsForPattern(p.id).length === 0);
+  } else if (tagVal) {
+    result = result.filter(p => getTagsForPattern(p.id).includes(tagVal));
+  }
+  if (!showSuppressed) {
+    result = result.filter(p => {
+      const tags = getTagsForPattern(p.id);
+      return !tags.includes('suppress') && !tags.includes('ignore') && !p.suppressed;
+    });
+  }
+  filtered = sortPatterns(result);
+  renderTable();
+}
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(applyFilters, 150);
+});
+
+groupFilterSelect.addEventListener('change', applyFilters);
+tagFilterSelect.addEventListener('change', applyFilters);
+document.getElementById('download-tags').addEventListener('click', downloadTags);
+refreshTagFilter();
+
+// Sorting
+function sortPatterns(arr) {
+  const col = sortCol;
+  const asc = sortAsc;
+  return arr.sort((a, b) => {
+    let va, vb;
+    if (col === 'rank' || col === 'count' || col === 'pct') { va = a.count; vb = b.count; }
+    else if (col === 'template') { va = a.template.toLowerCase(); vb = b.template.toLowerCase(); }
+    else if (col === 'group') { va = (a.group || '').toLowerCase(); vb = (b.group || '').toLowerCase(); }
+    else { va = a.count; vb = b.count; }
+    if (va < vb) return asc ? -1 : 1;
+    if (va > vb) return asc ? 1 : -1;
+    return 0;
+  });
+}
+
+document.querySelectorAll('th[data-sort]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.sort;
+    if (sortCol === col) { sortAsc = !sortAsc; }
+    else { sortCol = col; sortAsc = col === 'template'; }
+    document.querySelectorAll('th').forEach(t => t.classList.remove('sorted'));
+    th.classList.add('sorted');
+    th.querySelector('.sort-arrow').textContent = sortAsc ? '▲' : '▼';
+    filtered = sortPatterns(filtered);
+    renderTable();
+  });
+});
+
+// For rank column, default sort is descending by count
+sortCol = 'count';
+sortAsc = false;
+filtered = sortPatterns([...DATA.patterns]);
+renderTable();
+</script>
+</body>
+</html>
