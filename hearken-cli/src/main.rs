@@ -78,6 +78,16 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
     },
+    /// Compare two databases to find new, resolved, and changed patterns
+    Diff {
+        /// Path to the "before" database
+        before: String,
+        /// Path to the "after" database
+        after: String,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -109,6 +119,10 @@ fn main() -> Result<()> {
         }
         Commands::Export { format, output, samples, top, filter, group } => {
             export_patterns(&storage, &format, output.as_deref(), samples, top, filter, group)?;
+        }
+        Commands::Diff { before, after, format } => {
+            drop(storage);
+            diff_databases(&before, &after, &format)?;
         }
     }
 
@@ -826,6 +840,144 @@ fn export_patterns(
         None => {
             print!("{}", content);
         }
+    }
+
+    Ok(())
+}
+
+fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<()> {
+    if format != "text" && format != "json" {
+        bail!("--format must be 'text' or 'json', got '{}'", format);
+    }
+
+    // Open the "after" database and attach the "before" database
+    let conn = rusqlite::Connection::open(after_path)
+        .with_context(|| format!("Failed to open 'after' database: {}", after_path))?;
+    conn.execute("ATTACH DATABASE ? AS before_db", rusqlite::params![before_path])
+        .with_context(|| format!("Failed to attach 'before' database: {}", before_path))?;
+
+    // New patterns: in after but not in before (matched by group name + template)
+    let mut new_patterns: Vec<(String, String, i64)> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT fg.name, p.template, p.occurrence_count
+             FROM patterns p
+             JOIN file_groups fg ON p.file_group_id = fg.id
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM before_db.patterns bp
+                 JOIN before_db.file_groups bfg ON bp.file_group_id = bfg.id
+                 WHERE bfg.name = fg.name AND bp.template = p.template
+             )
+             AND p.occurrence_count > 0
+             ORDER BY p.occurrence_count DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        for row in rows { new_patterns.push(row?); }
+    }
+
+    // Resolved patterns: in before but not in after
+    let mut resolved_patterns: Vec<(String, String, i64)> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT bfg.name, bp.template, bp.occurrence_count
+             FROM before_db.patterns bp
+             JOIN before_db.file_groups bfg ON bp.file_group_id = bfg.id
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM patterns p
+                 JOIN file_groups fg ON p.file_group_id = fg.id
+                 WHERE fg.name = bfg.name AND p.template = bp.template
+             )
+             AND bp.occurrence_count > 0
+             ORDER BY bp.occurrence_count DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        for row in rows { resolved_patterns.push(row?); }
+    }
+
+    // Changed patterns: exist in both, count changed significantly (>2x or <0.5x)
+    let mut changed_patterns: Vec<(String, String, i64, i64)> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT fg.name, p.template, bp.occurrence_count, p.occurrence_count
+             FROM patterns p
+             JOIN file_groups fg ON p.file_group_id = fg.id
+             JOIN before_db.patterns bp ON bp.template = p.template
+             JOIN before_db.file_groups bfg ON bp.file_group_id = bfg.id AND bfg.name = fg.name
+             WHERE p.occurrence_count > 0 AND bp.occurrence_count > 0
+               AND (p.occurrence_count > bp.occurrence_count * 2 OR p.occurrence_count * 2 < bp.occurrence_count)
+             ORDER BY ABS(p.occurrence_count - bp.occurrence_count) DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
+        })?;
+        for row in rows { changed_patterns.push(row?); }
+    }
+
+    conn.execute("DETACH DATABASE before_db", [])?;
+
+    if format == "json" {
+        let output = serde_json::json!({
+            "before": before_path,
+            "after": after_path,
+            "new_patterns": new_patterns.iter().map(|(g, t, c)| {
+                serde_json::json!({"group": g, "template": t, "count": c})
+            }).collect::<Vec<_>>(),
+            "resolved_patterns": resolved_patterns.iter().map(|(g, t, c)| {
+                serde_json::json!({"group": g, "template": t, "count": c})
+            }).collect::<Vec<_>>(),
+            "changed_patterns": changed_patterns.iter().map(|(g, t, before, after)| {
+                serde_json::json!({
+                    "group": g, "template": t,
+                    "before_count": before, "after_count": after,
+                    "change": format!("{:+.0}%", (*after as f64 / *before as f64 - 1.0) * 100.0),
+                })
+            }).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("═══ Hearken Diff: {} → {} ═══\n", before_path, after_path);
+
+        fn truncate_template(t: &str, max: usize) -> String {
+            let first_line = t.lines().next().unwrap_or(t);
+            if first_line.len() > max { format!("{}…", &first_line[..max]) } else { first_line.to_string() }
+        }
+
+        if new_patterns.is_empty() {
+            println!("✅ New patterns: none");
+        } else {
+            println!("🆕 New patterns: {}", new_patterns.len());
+            for (group, template, count) in &new_patterns {
+                println!("  [{:<20}] {:>8}x  {}", group, count, truncate_template(template, 100));
+            }
+        }
+        println!();
+
+        if resolved_patterns.is_empty() {
+            println!("✅ Resolved patterns: none");
+        } else {
+            println!("🗑️  Resolved patterns: {}", resolved_patterns.len());
+            for (group, template, count) in &resolved_patterns {
+                println!("  [{:<20}] {:>8}x  {}", group, count, truncate_template(template, 100));
+            }
+        }
+        println!();
+
+        if changed_patterns.is_empty() {
+            println!("✅ Changed patterns (>2x): none");
+        } else {
+            println!("📈 Changed patterns (>2x): {}", changed_patterns.len());
+            for (group, template, before, after) in &changed_patterns {
+                let pct = (*after as f64 / *before as f64 - 1.0) * 100.0;
+                let arrow = if pct > 0.0 { "↑" } else { "↓" };
+                println!("  [{:<20}] {} → {} ({}{:.0}%)  {}", group, before, after, arrow, pct.abs(), truncate_template(template, 80));
+            }
+        }
+
+        println!("\nSummary: {} new, {} resolved, {} changed (>2x)", new_patterns.len(), resolved_patterns.len(), changed_patterns.len());
     }
 
     Ok(())
