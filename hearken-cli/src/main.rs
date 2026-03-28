@@ -4,9 +4,83 @@ use hearken_core::{LogReader, LogTemplate, extract_timestamp, tokenize};
 use hearken_ml::{LogParser, template_similarity};
 use hearken_storage::Storage;
 use rayon::prelude::*;
+use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
+
+#[derive(Deserialize, Default, Debug)]
+struct HearkenConfig {
+    database: Option<String>,
+    threshold: Option<f64>,
+    batch_size: Option<usize>,
+    #[serde(default)]
+    report: ReportConfig,
+    #[serde(default)]
+    export: ExportConfig,
+    #[serde(default)]
+    check: CheckConfig,
+}
+
+#[derive(Deserialize, Default, Debug)]
+struct ReportConfig {
+    output: Option<String>,
+    top: Option<usize>,
+    samples: Option<usize>,
+    filter: Option<Vec<String>>,
+    group: Option<Vec<String>>,
+    tags_file: Option<String>,
+    bucket: Option<String>,
+}
+
+#[derive(Deserialize, Default, Debug)]
+struct ExportConfig {
+    format: Option<String>,
+    top: Option<usize>,
+    samples: Option<usize>,
+    filter: Option<Vec<String>>,
+    group: Option<Vec<String>>,
+    tags_file: Option<String>,
+    bucket: Option<String>,
+}
+
+#[derive(Deserialize, Default, Debug)]
+struct CheckConfig {
+    max_anomaly_score: Option<f64>,
+    max_new_patterns: Option<usize>,
+    baseline: Option<String>,
+    tags_file: Option<String>,
+}
+
+fn load_config() -> HearkenConfig {
+    // Search for .hearken.toml in cwd, then parent dirs
+    let mut dir = std::env::current_dir().ok();
+    while let Some(ref d) = dir {
+        let config_path = d.join(".hearken.toml");
+        if config_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                if let Ok(config) = toml::from_str::<HearkenConfig>(&content) {
+                    eprintln!("Using config: {}", config_path.display());
+                    return config;
+                }
+            }
+        }
+        dir = d.parent().map(|p| p.to_path_buf());
+    }
+    // Check ~/.config/hearken/config.toml
+    if let Some(home) = std::env::var_os("HOME") {
+        let config_path = Path::new(&home).join(".config/hearken/config.toml");
+        if config_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                if let Ok(config) = toml::from_str::<HearkenConfig>(&content) {
+                    eprintln!("Using config: {}", config_path.display());
+                    return config;
+                }
+            }
+        }
+    }
+    HearkenConfig::default()
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -136,6 +210,11 @@ enum Commands {
         #[arg(long)]
         include_suppressed: bool,
     },
+    /// Save or compare database baselines for regression detection
+    Baseline {
+        #[command(subcommand)]
+        action: BaselineAction,
+    },
     /// Run CI/CD quality gate checks on processed logs
     Check {
         /// Maximum anomaly score before failing
@@ -162,14 +241,46 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum BaselineAction {
+    /// Save current database state as a baseline
+    Save {
+        /// Output baseline file path
+        #[arg(long, default_value = "hearken-baseline.db")]
+        output: String,
+    },
+    /// Compare current database against a baseline
+    Compare {
+        /// Path to baseline database
+        baseline: String,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+}
+
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let config = load_config();
+    let mut cli = Cli::parse();
+
+    // Apply config default for database (CLI override if user changed from clap default)
+    if cli.database == "hearken.db" {
+        if let Some(ref db) = config.database {
+            cli.database = db.clone();
+        }
+    }
 
     let storage = Storage::open(&cli.database)
         .context("Failed to open database")?;
 
     match cli.command {
-        Commands::Process { files, threshold, batch_size } => {
+        Commands::Process { files, mut threshold, mut batch_size } => {
+            if threshold == 0.5 {
+                if let Some(t) = config.threshold { threshold = t; }
+            }
+            if batch_size == 500000 {
+                if let Some(b) = config.batch_size { batch_size = b; }
+            }
             if !(0.0..=1.0).contains(&threshold) {
                 bail!("--threshold must be between 0.0 and 1.0, got {}", threshold);
             }
@@ -186,10 +297,52 @@ fn main() -> Result<()> {
         Commands::Stats {} => {
             show_stats(&storage, &cli.database)?;
         }
-        Commands::Report { output, samples, top, filter, group, tags_file, include_suppressed, bucket } => {
+        Commands::Report { mut output, mut samples, mut top, mut filter, mut group, mut tags_file, include_suppressed, mut bucket } => {
+            if output == "report.html" {
+                if let Some(ref o) = config.report.output { output = o.clone(); }
+            }
+            if samples == 5 {
+                if let Some(s) = config.report.samples { samples = s; }
+            }
+            if top == 500 {
+                if let Some(t) = config.report.top { top = t; }
+            }
+            if filter.is_none() {
+                filter = config.report.filter.clone();
+            }
+            if group.is_none() {
+                group = config.report.group.clone();
+            }
+            if tags_file.is_none() {
+                tags_file = config.report.tags_file.clone();
+            }
+            if bucket == "auto" {
+                if let Some(ref b) = config.report.bucket { bucket = b.clone(); }
+            }
             generate_report(&storage, &output, samples, top, filter, group, tags_file, include_suppressed, &bucket)?;
         }
-        Commands::Export { format, output, samples, top, filter, group, tags_file, include_suppressed, bucket } => {
+        Commands::Export { mut format, output, mut samples, mut top, mut filter, mut group, mut tags_file, include_suppressed, mut bucket } => {
+            if format == "json" {
+                if let Some(ref f) = config.export.format { format = f.clone(); }
+            }
+            if samples == 5 {
+                if let Some(s) = config.export.samples { samples = s; }
+            }
+            if top == 500 {
+                if let Some(t) = config.export.top { top = t; }
+            }
+            if filter.is_none() {
+                filter = config.export.filter.clone();
+            }
+            if group.is_none() {
+                group = config.export.group.clone();
+            }
+            if tags_file.is_none() {
+                tags_file = config.export.tags_file.clone();
+            }
+            if bucket == "auto" {
+                if let Some(ref b) = config.export.bucket { bucket = b.clone(); }
+            }
             export_patterns(&storage, &format, output.as_deref(), samples, top, filter, group, tags_file.as_deref(), include_suppressed, &bucket)?;
         }
         Commands::Diff { before, after, format } => {
@@ -205,10 +358,34 @@ fn main() -> Result<()> {
         Commands::Anomalies { group, top, format, tags_file, include_suppressed } => {
             detect_anomalies(&storage, group.as_deref(), top, &format, tags_file.as_deref(), include_suppressed)?;
         }
-        Commands::Check { max_anomaly_score, max_new_patterns, fail_on_pattern, baseline, tags_file, group, format } => {
+        Commands::Check { mut max_anomaly_score, mut max_new_patterns, fail_on_pattern, mut baseline, mut tags_file, group, format } => {
+            if max_anomaly_score.is_none() {
+                max_anomaly_score = config.check.max_anomaly_score;
+            }
+            if max_new_patterns.is_none() {
+                max_new_patterns = config.check.max_new_patterns;
+            }
+            if baseline.is_none() {
+                baseline = config.check.baseline.clone();
+            }
+            if tags_file.is_none() {
+                tags_file = config.check.tags_file.clone();
+            }
             let passed = run_check(&storage, max_anomaly_score, max_new_patterns, fail_on_pattern, baseline, tags_file.as_deref(), group.as_deref(), &format)?;
             if !passed {
                 std::process::exit(1);
+            }
+        }
+        Commands::Baseline { action } => {
+            match action {
+                BaselineAction::Save { output } => {
+                    save_baseline(&storage, &output)?;
+                }
+                BaselineAction::Compare { baseline, format } => {
+                    drop(storage);
+                    let diff = compute_diff(&baseline, &cli.database)?;
+                    format_diff(&diff, &baseline, &cli.database, &format)?;
+                }
             }
         }
     }
@@ -1087,6 +1264,66 @@ fn export_patterns(
     Ok(())
 }
 
+fn save_baseline(storage: &Storage, output_path: &str) -> Result<()> {
+    let start = Instant::now();
+    println!("Saving baseline to {}...", output_path);
+
+    let mut baseline = Storage::open(output_path)
+        .context("Failed to create baseline database")?;
+
+    // Copy file_groups
+    let mut stmt = storage.conn.prepare("SELECT id, name FROM file_groups")?;
+    let groups: Vec<(i64, String)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?.filter_map(|r| r.ok()).collect();
+
+    let tx = baseline.conn.transaction()?;
+    for (id, name) in &groups {
+        tx.execute(
+            "INSERT INTO file_groups (id, name) VALUES (?, ?)",
+            rusqlite::params![id, name],
+        )?;
+    }
+
+    // Copy patterns (with occurrence counts)
+    let mut stmt = storage.conn.prepare(
+        "SELECT id, file_group_id, template, occurrence_count FROM patterns WHERE occurrence_count > 0"
+    )?;
+    let patterns: Vec<(i64, i64, String, i64)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })?.filter_map(|r| r.ok()).collect();
+
+    {
+        let mut insert_stmt = tx.prepare(
+            "INSERT INTO patterns (id, file_group_id, template, occurrence_count) VALUES (?, ?, ?, ?)"
+        )?;
+        for (id, group_id, template, count) in &patterns {
+            insert_stmt.execute(rusqlite::params![id, group_id, template, count])?;
+        }
+    }
+
+    // Also populate the FTS table
+    {
+        let mut fts_stmt = tx.prepare(
+            "INSERT INTO patterns_fts (pattern_id, template) VALUES (?, ?)"
+        )?;
+        for (id, _, template, _) in &patterns {
+            fts_stmt.execute(rusqlite::params![id, template])?;
+        }
+    }
+
+    tx.commit()?;
+
+    let baseline_size = std::fs::metadata(output_path).map(|m| m.len()).unwrap_or(0);
+    let elapsed = start.elapsed();
+    println!("Baseline saved in {:.1}s", elapsed.as_secs_f64());
+    println!("  Groups: {}", groups.len());
+    println!("  Patterns: {}", patterns.len());
+    println!("  Size: {}", format_size(baseline_size));
+
+    Ok(())
+}
+
 struct DiffResult {
     new_patterns: Vec<(String, String, i64)>,
     resolved_patterns: Vec<(String, String, i64)>,
@@ -1162,13 +1399,12 @@ fn compute_diff(before_path: &str, after_path: &str) -> Result<DiffResult> {
     Ok(DiffResult { new_patterns, resolved_patterns, changed_patterns })
 }
 
-fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<()> {
+fn format_diff(diff: &DiffResult, before_path: &str, after_path: &str, format: &str) -> Result<()> {
     if format != "text" && format != "json" {
         bail!("--format must be 'text' or 'json', got '{}'", format);
     }
 
-    let diff = compute_diff(before_path, after_path)?;
-    let DiffResult { new_patterns, resolved_patterns, changed_patterns } = &diff;
+    let DiffResult { new_patterns, resolved_patterns, changed_patterns } = diff;
 
     if format == "json" {
         let output = serde_json::json!({
@@ -1232,6 +1468,11 @@ fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<(
     }
 
     Ok(())
+}
+
+fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<()> {
+    let diff = compute_diff(before_path, after_path)?;
+    format_diff(&diff, before_path, after_path, format)
 }
 
 fn find_duplicates(
@@ -1784,5 +2025,40 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups["access.log"], vec!["access.log", "access.log.1"]);
         assert_eq!(groups["error.log"], vec!["error.log.2026-03-01", "error.log.2026-03-02"]);
+    }
+
+    #[test]
+    fn test_config_parsing() {
+        let toml_str = r#"
+database = "logs/hearken.db"
+threshold = 0.4
+batch_size = 1000000
+
+[report]
+top = 1000
+samples = 10
+output = "my-report.html"
+filter = ["*ERROR*", "*WARN*"]
+tags_file = "my-tags.json"
+bucket = "hour"
+
+[check]
+max_anomaly_score = 5.0
+max_new_patterns = 10
+baseline = "baseline.db"
+"#;
+        let config: HearkenConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.database.unwrap(), "logs/hearken.db");
+        assert_eq!(config.threshold.unwrap(), 0.4);
+        assert_eq!(config.batch_size.unwrap(), 1000000);
+        assert_eq!(config.report.top.unwrap(), 1000);
+        assert_eq!(config.report.samples.unwrap(), 10);
+        assert_eq!(config.report.output.unwrap(), "my-report.html");
+        assert_eq!(config.report.filter.unwrap(), vec!["*ERROR*", "*WARN*"]);
+        assert_eq!(config.report.tags_file.unwrap(), "my-tags.json");
+        assert_eq!(config.report.bucket.unwrap(), "hour");
+        assert_eq!(config.check.max_anomaly_score.unwrap(), 5.0);
+        assert_eq!(config.check.max_new_patterns.unwrap(), 10);
+        assert_eq!(config.check.baseline.unwrap(), "baseline.db");
     }
 }

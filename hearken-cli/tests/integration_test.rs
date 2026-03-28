@@ -469,3 +469,39 @@ fn test_check_command_fail() {
         .unwrap();
     assert!(!output.status.success(), "Check should fail when pattern found");
 }
+
+#[test]
+fn test_baseline_save_and_compare() {
+    let dir = TempDir::new().unwrap();
+    let log_file = dir.path().join("app.log");
+    let db_file = dir.path().join("test.db");
+    let baseline_file = dir.path().join("baseline.db");
+
+    fs::write(&log_file, generate_log_lines(50, "BaselineApp")).unwrap();
+
+    // Process
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process", log_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // Save baseline
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "baseline", "save", "--output", baseline_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "Baseline save failed: {}", stdout);
+    assert!(baseline_file.exists(), "Baseline file should exist");
+    assert!(stdout.contains("Baseline saved"), "Should confirm save: {}", stdout);
+
+    // Compare (should show no changes since same data)
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "baseline", "compare", baseline_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "Baseline compare failed: {}", stdout);
+    assert!(stdout.contains("0 new"), "Should show no new patterns: {}", stdout);
+}
