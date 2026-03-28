@@ -580,3 +580,116 @@ fn test_correlate_command() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Finding correlations"), "Should show progress: {}", stdout);
 }
+
+#[test]
+fn test_process_stdin() {
+    let dir = TempDir::new().unwrap();
+    let db_file = dir.path().join("test.db");
+
+    let log_data = generate_log_lines(50, "StdinApp");
+
+    let mut child = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().unwrap();
+        stdin.write_all(log_data.as_bytes()).unwrap();
+    }
+
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "Process stdin failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains("file group(s)"), "Should print group info: {}", stdout);
+    assert!(stdout.contains("stdin"), "Group name should be 'stdin': {}", stdout);
+    assert!(db_file.exists(), "Database should be created");
+}
+
+#[test]
+fn test_process_stdin_with_group_name() {
+    let dir = TempDir::new().unwrap();
+    let db_file = dir.path().join("test.db");
+
+    let log_data = generate_log_lines(30, "CustomApp");
+
+    let mut child = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process", "--group-name", "my-logs", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().unwrap();
+        stdin.write_all(log_data.as_bytes()).unwrap();
+    }
+
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "Process stdin with group-name failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains("my-logs"), "Group name should be 'my-logs': {}", stdout);
+}
+
+#[test]
+fn test_watch_detects_appended_content() {
+    use std::io::Write;
+
+    let dir = TempDir::new().unwrap();
+    let log_file = dir.path().join("watch-test.log");
+    let db_file = dir.path().join("watch.db");
+
+    // Create initial log file
+    fs::write(&log_file, generate_log_lines(20, "WatchApp")).unwrap();
+
+    // Start the watch command in a child process
+    let child = Command::new(cli_bin())
+        .args([
+            "-d", db_file.to_str().unwrap(),
+            "watch",
+            log_file.to_str().unwrap(),
+            "--threshold", "0.5",
+            "--batch-size", "100000",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Wait for initial processing to complete
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // Append new lines to the file
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_file)
+            .unwrap();
+        let new_lines = generate_log_lines(10, "WatchApp");
+        f.write_all(new_lines.as_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+
+    // Give the watcher time to detect and process
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // Kill the process (send SIGINT for clean shutdown)
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT); }
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(combined.contains("[watch] Initial processing complete"), 
+        "Should complete initial processing. Output:\n{}", combined);
+    assert!(combined.contains("[watch] File modified:"),
+        "Should detect file modification. Output:\n{}", combined);
+    assert!(combined.contains("new entries"),
+        "Should report new entries. Output:\n{}", combined);
+}

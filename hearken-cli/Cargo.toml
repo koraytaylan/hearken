@@ -3,18 +3,29 @@ name = "hearken-cli"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+web = ["axum", "tokio", "tower-http"]
+
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.102"
+axum = { version = "0.8", optional = true }
 clap = { version = "4.6.0", features = ["derive"] }
 hearken-core = { version = "0.1.0", path = "../hearken-core" }
 hearken-ml = { version = "0.1.0", path = "../hearken-ml" }
 hearken-storage = { version = "0.1.0", path = "../hearken-storage" }
+libc = "0.2"
+notify = "7"
 rayon = "1.11.0"
 rusqlite = "0.39.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["full"], optional = true }
 toml = "0.8"
+tower-http = { version = "0.6", features = ["cors"], optional = true }
 
 [dev-dependencies]
-tempfile = "3"
+libc = "0.2"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }

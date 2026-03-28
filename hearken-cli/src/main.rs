@@ -7,7 +7,11 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
+
+#[cfg(feature = "web")]
+mod web;
 
 #[derive(Deserialize, Default, Debug)]
 struct HearkenConfig {
@@ -94,9 +98,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Process log file(s)
+    /// Process log file(s) — use "-" to read from stdin
     Process {
-        /// Path(s) to log file(s) — use shell glob e.g. ~/logs/*.log
+        /// Path(s) to log file(s) — use shell glob e.g. ~/logs/*.log, or "-" for stdin
         #[arg(required = true)]
         files: Vec<String>,
         /// Similarity threshold for pattern matching (0.0 to 1.0)
@@ -105,6 +109,9 @@ enum Commands {
         /// Number of lines to process in each batch
         #[arg(long, default_value_t = 500000)]
         batch_size: usize,
+        /// Override the derived group name (default for stdin: "stdin")
+        #[arg(long)]
+        group_name: Option<String>,
     },
     /// Search for patterns in the database
     Search {
@@ -275,6 +282,28 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Watch log files for changes and process new entries live
+    Watch {
+        /// Path(s) to log file(s) to watch
+        #[arg(required = true)]
+        files: Vec<String>,
+        /// Similarity threshold for pattern matching (0.0 to 1.0)
+        #[arg(long, default_value_t = 0.5)]
+        threshold: f64,
+        /// Number of lines to process in each batch
+        #[arg(long, default_value_t = 500000)]
+        batch_size: usize,
+        /// Trigger OS notification when any anomaly score exceeds this value
+        #[arg(long)]
+        alert_score: Option<f64>,
+    },
+    /// Start a local HTTP server with a live web dashboard
+    #[cfg(feature = "web")]
+    Serve {
+        /// Port to listen on
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -310,7 +339,7 @@ fn main() -> Result<()> {
         .context("Failed to open database")?;
 
     match cli.command {
-        Commands::Process { files, mut threshold, mut batch_size } => {
+        Commands::Process { files, mut threshold, mut batch_size, group_name } => {
             if threshold == 0.5 {
                 if let Some(t) = config.threshold { threshold = t; }
             }
@@ -320,12 +349,33 @@ fn main() -> Result<()> {
             if !(0.0..=1.0).contains(&threshold) {
                 bail!("--threshold must be between 0.0 and 1.0, got {}", threshold);
             }
-            let valid_files = validate_files(&files);
+
+            // Handle stdin ("-") entries: read stdin into a temp file
+            let mut _stdin_tempfiles: Vec<tempfile::NamedTempFile> = Vec::new();
+            let mut resolved_files: Vec<String> = Vec::new();
+            let mut stdin_paths: HashSet<String> = HashSet::new();
+
+            for f in &files {
+                if f == "-" {
+                    let mut tmp = tempfile::NamedTempFile::new()
+                        .context("Failed to create temp file for stdin")?;
+                    std::io::copy(&mut std::io::stdin().lock(), &mut tmp)
+                        .context("Failed to read stdin into temp file")?;
+                    let path_str = tmp.path().to_string_lossy().to_string();
+                    stdin_paths.insert(path_str.clone());
+                    resolved_files.push(path_str);
+                    _stdin_tempfiles.push(tmp);
+                } else {
+                    resolved_files.push(f.clone());
+                }
+            }
+
+            let valid_files = validate_files(&resolved_files);
             if valid_files.is_empty() {
                 bail!("No valid files to process. All provided paths were invalid or empty.");
             }
             let mut storage = storage;
-            process_files(&mut storage, &valid_files, threshold, batch_size)?;
+            process_files(&mut storage, &valid_files, threshold, batch_size, group_name.as_deref(), &stdin_paths)?;
         }
         Commands::Search { query } => {
             search_patterns(&storage, &query)?;
@@ -418,6 +468,23 @@ fn main() -> Result<()> {
         Commands::Cluster { min_shared, top, group, pattern_limit, format } => {
             find_clusters(&storage, min_shared, top, group.as_deref(), pattern_limit, &format)?;
         }
+        Commands::Watch { files, mut threshold, mut batch_size, alert_score } => {
+            if threshold == 0.5 {
+                if let Some(t) = config.threshold { threshold = t; }
+            }
+            if batch_size == 500000 {
+                if let Some(b) = config.batch_size { batch_size = b; }
+            }
+            if !(0.0..=1.0).contains(&threshold) {
+                bail!("--threshold must be between 0.0 and 1.0, got {}", threshold);
+            }
+            let valid_files = validate_files(&files);
+            if valid_files.is_empty() {
+                bail!("No valid files to watch. All provided paths were invalid or empty.");
+            }
+            let mut storage = storage;
+            watch_files(&mut storage, &valid_files, threshold, batch_size, alert_score)?;
+        }
         Commands::Baseline { action } => {
             match action {
                 BaselineAction::Save { output } => {
@@ -429,6 +496,14 @@ fn main() -> Result<()> {
                     format_diff(&diff, &baseline, &cli.database, &format)?;
                 }
             }
+        }
+        #[cfg(feature = "web")]
+        Commands::Serve { port } => {
+            drop(storage);
+            let db_path = cli.database.clone();
+            let rt = tokio::runtime::Runtime::new()
+                .context("Failed to create Tokio runtime")?;
+            rt.block_on(web::run_server(&db_path, port))?;
         }
     }
 
@@ -699,6 +774,259 @@ fn group_entries<'a>(lines: &[(u64, &'a str, u64)], entry_fps: &HashSet<String>)
 
 /// Validates file paths: checks existence, readability, and non-emptiness.
 /// Returns only the valid paths, printing warnings for skipped files.
+fn send_os_notification(title: &str, message: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &format!("display notification \"{}\" with title \"{}\"", escaped, title)])
+            .output();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .args([title, message])
+            .output();
+    }
+}
+
+fn watch_files(
+    storage: &mut Storage,
+    file_paths: &[String],
+    threshold: f64,
+    batch_size: usize,
+    alert_score: Option<f64>,
+) -> Result<()> {
+    use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::mpsc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // Phase 1: Initial processing of all files
+    println!("[watch] Initial processing of {} file(s)...", file_paths.len());
+    let stdin_paths = HashSet::new();
+    process_files(storage, file_paths, threshold, batch_size, None, &stdin_paths)?;
+    println!("[watch] Initial processing complete.\n");
+
+    // Phase 2: Set up file watching
+    let (tx, rx) = mpsc::channel();
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        },
+        Config::default(),
+    ).context("Failed to create file watcher")?;
+
+    // Watch parent directories of all input files
+    let mut watched_dirs: HashSet<String> = HashSet::new();
+    for file_path in file_paths {
+        let abs_path = std::fs::canonicalize(file_path)
+            .with_context(|| format!("Failed to resolve path: {}", file_path))?;
+        if let Some(parent) = abs_path.parent() {
+            let dir_str = parent.to_string_lossy().to_string();
+            if watched_dirs.insert(dir_str.clone()) {
+                watcher.watch(parent, RecursiveMode::NonRecursive)
+                    .with_context(|| format!("Failed to watch directory: {}", parent.display()))?;
+                println!("[watch] Watching directory: {}", parent.display());
+            }
+        }
+    }
+
+    // Build a set of canonical paths for quick lookup
+    let canonical_paths: HashMap<String, String> = file_paths.iter().filter_map(|fp| {
+        std::fs::canonicalize(fp).ok().map(|cp| (cp.to_string_lossy().to_string(), fp.clone()))
+    }).collect();
+
+    // Set up Ctrl+C handler
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc_flag(&r);
+
+    println!("[watch] Watching {} file(s) for changes. Press Ctrl+C to stop.\n", file_paths.len());
+
+    while running.load(Ordering::Relaxed) {
+        // Wait for events with a timeout so we can check the running flag
+        let event = match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(e) => e,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+
+        // Only care about Modify events
+        if !matches!(event.kind, notify::EventKind::Modify(_)) {
+            continue;
+        }
+
+        // Drain any additional pending events to batch-process
+        let mut all_modified: HashSet<String> = HashSet::new();
+        for path in &event.paths {
+            let canon = std::fs::canonicalize(path)
+                .unwrap_or_else(|_| path.clone());
+            all_modified.insert(canon.to_string_lossy().to_string());
+        }
+        while let Ok(extra) = rx.try_recv() {
+            if matches!(extra.kind, notify::EventKind::Modify(_)) {
+                for path in &extra.paths {
+                    let canon = std::fs::canonicalize(path)
+                        .unwrap_or_else(|_| path.clone());
+                    all_modified.insert(canon.to_string_lossy().to_string());
+                }
+            }
+        }
+
+        for canon_path in &all_modified {
+            let original_path = match canonical_paths.get(canon_path) {
+                Some(p) => p,
+                None => continue, // Not one of our watched files
+            };
+
+            // Get current file size
+            let current_size = match std::fs::metadata(original_path) {
+                Ok(m) => m.len(),
+                Err(_) => continue,
+            };
+
+            // Get last processed position from DB
+            let groups = group_files(&[original_path.clone()], None, &HashSet::new());
+            let (group_name, _) = match groups.iter().next() {
+                Some(g) => g,
+                None => continue,
+            };
+            let file_group_id = storage.get_or_create_file_group(group_name)
+                .context("Failed to get file group")?;
+            let source = storage.get_or_create_log_source(original_path, file_group_id)?;
+            let last_pos = source.last_processed_position;
+
+            if current_size == last_pos {
+                continue; // No new data
+            }
+
+            // Handle log rotation (file truncated)
+            if current_size < last_pos {
+                println!("[watch] File truncated (rotation detected): {} — resetting position to 0", original_path);
+                storage.conn.execute(
+                    "UPDATE log_sources SET last_processed_position = 0 WHERE id = ?",
+                    rusqlite::params![source.id.unwrap()],
+                )?;
+            }
+
+            let new_bytes = if current_size > last_pos {
+                current_size - last_pos
+            } else {
+                current_size // After rotation reset
+            };
+
+            // Process new content incrementally
+            let mut parser = LogParser::new(15, threshold);
+            let mut pattern_id_cache: HashMap<usize, i64> = HashMap::new();
+            let mut occurrence_counts: HashMap<usize, u64> = HashMap::new();
+
+            // Seed parser from existing patterns
+            {
+                let mut stmt = storage.conn.prepare(
+                    "SELECT id, template FROM patterns WHERE file_group_id = ?"
+                )?;
+                let rows = stmt.query_map(rusqlite::params![file_group_id], |row| Ok(LogTemplate {
+                    id: Some(row.get(0)?),
+                    template: row.get(1)?,
+                }))?;
+                for row in rows {
+                    let template = row?;
+                    let db_id = template.id.unwrap();
+                    let idx = parser.templates.len();
+                    parser.add_template(template);
+                    pattern_id_cache.insert(idx, db_id);
+                }
+            }
+
+            let pre_count: i64 = storage.conn.query_row(
+                "SELECT COUNT(*) FROM occurrences WHERE log_source_id = ?",
+                rusqlite::params![source.id.unwrap()],
+                |row| row.get(0),
+            ).unwrap_or(0);
+
+            process_file(
+                storage, original_path, file_group_id,
+                &mut parser, &mut pattern_id_cache, &mut occurrence_counts,
+                batch_size,
+            )?;
+
+            // Write occurrence counts
+            {
+                let tx = storage.conn.transaction()?;
+                {
+                    let mut update_stmt = tx.prepare("UPDATE patterns SET occurrence_count = occurrence_count + ? WHERE id = ?")?;
+                    for (template_idx, count) in &occurrence_counts {
+                        if let Some(&pattern_id) = pattern_id_cache.get(template_idx) {
+                            update_stmt.execute(rusqlite::params![*count as i64, pattern_id])?;
+                        }
+                    }
+                }
+                tx.commit()?;
+            }
+
+            let post_count: i64 = storage.conn.query_row(
+                "SELECT COUNT(*) FROM occurrences WHERE log_source_id = ?",
+                rusqlite::params![source.id.unwrap()],
+                |row| row.get(0),
+            ).unwrap_or(0);
+
+            let new_entries = post_count - pre_count;
+            println!("[watch] File modified: {} (+{} bytes, {} new entries)",
+                original_path, new_bytes, new_entries);
+
+            // Check anomaly alerts if --alert-score is set
+            if let Some(alert_threshold) = alert_score {
+                let anomalies = compute_anomalies(storage, None, 10, &HashSet::new())?;
+                for a in &anomalies {
+                    if a.score >= alert_threshold {
+                        let msg = format!(
+                            "Anomaly score {:.1} in group '{}': {}",
+                            a.score,
+                            a.group,
+                            if a.template.len() > 80 { &a.template[..80] } else { &a.template }
+                        );
+                        println!("[watch] ALERT: {}", msg);
+                        send_os_notification("Hearken Alert", &msg);
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\n[watch] Stopped.");
+    Ok(())
+}
+
+/// Set a flag to false on Ctrl+C (SIGINT).
+fn ctrlc_flag(flag: &Arc<std::sync::atomic::AtomicBool>) {
+    let f = flag.clone();
+    let _ = libc_sigint_handler(f);
+}
+
+/// Minimal SIGINT handler using raw libc — avoids adding a ctrlc crate dependency.
+fn libc_sigint_handler(flag: Arc<std::sync::atomic::AtomicBool>) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    static mut RUNNING_FLAG: Option<*const std::sync::atomic::AtomicBool> = None;
+    extern "C" fn handler(_: libc::c_int) {
+        unsafe {
+            if let Some(ptr) = RUNNING_FLAG {
+                (*ptr).store(false, Ordering::Relaxed);
+            }
+        }
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\n");
+    }
+    unsafe {
+        let ptr = Arc::into_raw(flag);
+        RUNNING_FLAG = Some(ptr);
+        libc::signal(libc::SIGINT, handler as *const () as libc::sighandler_t);
+    }
+    Ok(())
+}
+
 fn validate_files(files: &[String]) -> Vec<String> {
     let mut valid = Vec::with_capacity(files.len());
     for file_path in files {
@@ -728,8 +1056,8 @@ fn validate_files(files: &[String]) -> Vec<String> {
     valid
 }
 
-fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, batch_size: usize) -> Result<()> {
-    let groups = group_files(file_paths);
+fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, batch_size: usize, group_name_override: Option<&str>, stdin_paths: &HashSet<String>) -> Result<()> {
+    let groups = group_files(file_paths, group_name_override, stdin_paths);
     println!("Found {} file group(s) from {} file(s):", groups.len(), file_paths.len());
     for (group_name, files) in &groups {
         println!("  {} ({} file(s))", group_name, files.len());
@@ -2317,10 +2645,14 @@ fn strip_pattern(input: &str, detector: impl Fn(&str) -> Option<usize>) -> Strin
 
 /// Groups file paths by their derived group name.
 /// Returns a BTreeMap (sorted by group name) of group_name → sorted file paths.
-fn group_files(file_paths: &[String]) -> BTreeMap<String, Vec<String>> {
+fn group_files(file_paths: &[String], group_name_override: Option<&str>, stdin_paths: &HashSet<String>) -> BTreeMap<String, Vec<String>> {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for path in file_paths {
-        let group = derive_group_name(path);
+        let group = if stdin_paths.contains(path) {
+            group_name_override.unwrap_or("stdin").to_string()
+        } else {
+            derive_group_name(path)
+        };
         groups.entry(group).or_default().push(path.clone());
     }
     for files in groups.values_mut() {
@@ -2388,7 +2720,7 @@ mod tests {
             "access.log".to_string(),
             "access.log.1".to_string(),
         ];
-        let groups = group_files(&files);
+        let groups = group_files(&files, None, &HashSet::new());
         assert_eq!(groups.len(), 2);
         assert_eq!(groups["access.log"], vec!["access.log", "access.log.1"]);
         assert_eq!(groups["error.log"], vec!["error.log.2026-03-01", "error.log.2026-03-02"]);

@@ -82,10 +82,18 @@ impl Storage {
                 template
             );
 
+            CREATE TABLE IF NOT EXISTS tags (
+                pattern_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                PRIMARY KEY(pattern_id, tag),
+                FOREIGN KEY(pattern_id) REFERENCES patterns(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_occ_pattern ON occurrences(pattern_id);
             CREATE INDEX IF NOT EXISTS idx_occ_source ON occurrences(log_source_id);
             CREATE INDEX IF NOT EXISTS idx_occ_entry_ts ON occurrences(entry_timestamp);
             CREATE INDEX IF NOT EXISTS idx_patterns_group ON patterns(file_group_id);
+            CREATE INDEX IF NOT EXISTS idx_tags_pattern ON tags(pattern_id);
             ",
         )?;
         Ok(())
@@ -477,6 +485,65 @@ impl Storage {
         let mut results = Vec::new();
         for row in rows { results.push(row?); }
         Ok(results)
+    }
+    // --- Tag management methods ---
+
+    /// Get all tags for a pattern.
+    pub fn get_tags(&self, pattern_id: i64) -> Result<Vec<String>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT tag FROM tags WHERE pattern_id = ? ORDER BY tag"
+        )?;
+        let rows = stmt.query_map(params![pattern_id], |row| row.get::<_, String>(0))?;
+        let mut results = Vec::new();
+        for row in rows { results.push(row?); }
+        Ok(results)
+    }
+
+    /// Get tags for all patterns that have any tags.
+    /// Returns: HashMap<pattern_id, Vec<tag>>
+    pub fn get_all_tags(&self) -> Result<HashMap<i64, Vec<String>>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT pattern_id, tag FROM tags ORDER BY pattern_id, tag"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut result: HashMap<i64, Vec<String>> = HashMap::new();
+        for row in rows {
+            let (pid, tag) = row?;
+            result.entry(pid).or_default().push(tag);
+        }
+        Ok(result)
+    }
+
+    /// Set tags for a pattern (replaces all existing tags).
+    pub fn set_tags(&self, pattern_id: i64, tags: &[String]) -> Result<(), StorageError> {
+        self.conn.execute("DELETE FROM tags WHERE pattern_id = ?", params![pattern_id])?;
+        let mut stmt = self.conn.prepare(
+            "INSERT OR IGNORE INTO tags (pattern_id, tag) VALUES (?, ?)"
+        )?;
+        for tag in tags {
+            stmt.execute(params![pattern_id, tag])?;
+        }
+        Ok(())
+    }
+
+    /// Add a single tag to a pattern.
+    pub fn add_tag(&self, pattern_id: i64, tag: &str) -> Result<(), StorageError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO tags (pattern_id, tag) VALUES (?, ?)",
+            params![pattern_id, tag],
+        )?;
+        Ok(())
+    }
+
+    /// Remove a single tag from a pattern.
+    pub fn remove_tag(&self, pattern_id: i64, tag: &str) -> Result<(), StorageError> {
+        self.conn.execute(
+            "DELETE FROM tags WHERE pattern_id = ? AND tag = ?",
+            params![pattern_id, tag],
+        )?;
+        Ok(())
     }
 }
 
