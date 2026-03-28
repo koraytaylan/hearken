@@ -37,6 +37,8 @@ enum Commands {
         /// Query string for full-text search
         query: String,
     },
+    /// Show database statistics
+    Stats {},
     /// Generate an HTML report from the database
     Report {
         /// Output HTML file path
@@ -77,6 +79,9 @@ fn main() -> Result<()> {
         }
         Commands::Search { query } => {
             search_patterns(&storage, &query)?;
+        }
+        Commands::Stats {} => {
+            show_stats(&storage, &cli.database)?;
         }
         Commands::Report { output, samples, top, filter, group } => {
             generate_report(&storage, &output, samples, top, filter, group)?;
@@ -509,6 +514,97 @@ fn search_patterns(storage: &Storage, query: &str) -> Result<()> {
         println!("[Pattern ID: {}] {}", id, template);
     }
     Ok(())
+}
+
+fn show_stats(storage: &Storage, db_path: &str) -> Result<()> {
+    let pattern_count: i64 = storage.conn.query_row(
+        "SELECT COUNT(*) FROM patterns", [], |r| r.get(0)
+    ).unwrap_or(0);
+    let occurrence_count: i64 = storage.conn.query_row(
+        "SELECT COALESCE(SUM(occurrence_count), 0) FROM patterns", [], |r| r.get(0)
+    ).unwrap_or(0);
+    let source_count: i64 = storage.conn.query_row(
+        "SELECT COUNT(*) FROM log_sources", [], |r| r.get(0)
+    ).unwrap_or(0);
+
+    println!("═══ Hearken Database Statistics ═══\n");
+    println!("Patterns:     {}", pattern_count);
+    println!("Occurrences:  {}", occurrence_count);
+    println!("Source files:  {}", source_count);
+
+    // File groups with pattern counts
+    let mut stmt = storage.conn.prepare(
+        "SELECT fg.name, COUNT(p.id), COALESCE(SUM(p.occurrence_count), 0)
+         FROM file_groups fg
+         LEFT JOIN patterns p ON p.file_group_id = fg.id
+         GROUP BY fg.id
+         ORDER BY fg.name"
+    )?;
+    let groups: Vec<(String, i64, i64)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?.filter_map(|r| r.ok()).collect();
+
+    if !groups.is_empty() {
+        println!("\nFile groups:   {}", groups.len());
+        for (name, pcount, ocount) in &groups {
+            println!("  {:<30} {:>6} patterns, {:>10} occurrences", name, pcount, ocount);
+        }
+    }
+
+    // Source files with progress
+    let mut stmt = storage.conn.prepare(
+        "SELECT ls.file_path, ls.last_processed_position, fg.name
+         FROM log_sources ls
+         JOIN file_groups fg ON ls.file_group_id = fg.id
+         ORDER BY fg.name, ls.file_path"
+    )?;
+    let sources: Vec<(String, i64, String)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?.filter_map(|r| r.ok()).collect();
+
+    if !sources.is_empty() {
+        println!("\nSource files:");
+        for (path, pos, group) in &sources {
+            let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let progress = if file_size > 0 {
+                format!("{:.1}%", (*pos as f64 / file_size as f64) * 100.0)
+            } else {
+                "N/A".to_string()
+            };
+            println!("  [{}] {} (processed: {} bytes, {})", group, path, pos, progress);
+        }
+    }
+
+    // Database file sizes
+    let db_size = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+    let wal_path = format!("{}-wal", db_path);
+    let wal_size = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+    let shm_path = format!("{}-shm", db_path);
+    let shm_size = std::fs::metadata(&shm_path).map(|m| m.len()).unwrap_or(0);
+
+    println!("\nDatabase:");
+    println!("  DB file:     {} ({})", db_path, format_size(db_size));
+    if wal_size > 0 {
+        println!("  WAL file:    {} ({})", wal_path, format_size(wal_size));
+    }
+    if shm_size > 0 {
+        println!("  SHM file:    {} ({})", shm_path, format_size(shm_size));
+    }
+    println!("  Total:       {}", format_size(db_size + wal_size + shm_size));
+
+    Ok(())
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: usize, top_n: usize, filter: Option<Vec<String>>, group_filter: Option<Vec<String>>) -> Result<()> {
