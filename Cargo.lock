@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "hearken-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "hearken-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "memmap2",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "hearken-ml"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hearken-core",
  "rayon",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "hearken-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hearken-core",
  "rusqlite",
