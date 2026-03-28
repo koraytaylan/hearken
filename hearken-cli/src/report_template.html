@@ -163,6 +163,15 @@ tr.data-row.open .expand-icon{transform:rotate(90deg);color:var(--accent)}
 <div class="container">
   <div class="cards" id="summary-cards"></div>
 
+  <div id="timeline-chart" style="display:none;margin-bottom:24px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="font-size:16px;font-weight:600">📊 Source File Distribution</h3>
+      <span id="timeline-toggle" style="cursor:pointer;font-size:13px;color:var(--accent)">▼ Collapse</span>
+    </div>
+    <div id="timeline-svg-wrap"></div>
+    <div id="timeline-legend" style="margin-top:8px;font-size:12px;color:var(--text-secondary);display:flex;flex-wrap:wrap;gap:12px"></div>
+  </div>
+
   <div class="toolbar">
     <div class="search-box">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M11 11l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -323,6 +332,85 @@ cards.innerHTML = `
 let sortCol = 'rank';
 let sortAsc = true;
 let filtered = [...DATA.patterns];
+
+// Timeline Chart
+function renderTimeline() {
+  const container = document.getElementById('timeline-chart');
+  const wrap = document.getElementById('timeline-svg-wrap');
+  const legend = document.getElementById('timeline-legend');
+  if (!DATA.patterns.length || !DATA.patterns.some(p => p.trend && p.trend.length > 1)) return;
+
+  container.style.display = 'block';
+  const toggle = document.getElementById('timeline-toggle');
+  let collapsed = false;
+  toggle.onclick = () => {
+    collapsed = !collapsed;
+    wrap.style.display = collapsed ? 'none' : 'block';
+    legend.style.display = collapsed ? 'none' : 'flex';
+    toggle.textContent = collapsed ? '▶ Expand' : '▼ Collapse';
+  };
+
+  // Collect all source files and top 10 patterns
+  const sources = new Set();
+  DATA.patterns.forEach(p => { if (p.trend) p.trend.forEach(t => sources.add(t.source)); });
+  const srcList = [...sources].sort();
+  if (srcList.length < 2) return;
+
+  const topN = DATA.patterns.slice(0, 10);
+  const colors = ['#4f6ef7','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1'];
+  const W = Math.min(900, srcList.length * 80 + 100), H = 260;
+  const margin = {top:20,right:20,bottom:60,left:70};
+  const cw = W - margin.left - margin.right;
+  const ch = H - margin.top - margin.bottom;
+  const barW = Math.max(12, Math.min(40, cw / srcList.length - 4));
+
+  // Build stacked data
+  const maxStack = srcList.map((src, si) => {
+    let total = 0;
+    topN.forEach(p => {
+      const t = (p.trend||[]).find(t => t.source === src);
+      total += t ? t.count : 0;
+    });
+    return total;
+  });
+  const maxVal = Math.max(...maxStack, 1);
+
+  let svg = `<svg width="${W}" height="${H}" style="display:block;max-width:100%">`;
+  // Y axis
+  for (let i = 0; i <= 4; i++) {
+    const y = margin.top + ch - (i/4)*ch;
+    const val = Math.round(maxVal * i/4);
+    svg += `<line x1="${margin.left}" y1="${y}" x2="${W-margin.right}" y2="${y}" stroke="#e2e5ea" stroke-width="0.5"/>`;
+    svg += `<text x="${margin.left-8}" y="${y+4}" text-anchor="end" font-size="11" fill="#5f6672">${formatNumber(val)}</text>`;
+  }
+
+  srcList.forEach((src, si) => {
+    const x = margin.left + si * (cw / srcList.length) + (cw / srcList.length - barW) / 2;
+    let cumY = 0;
+    topN.forEach((p, pi) => {
+      const t = (p.trend||[]).find(t => t.source === src);
+      const val = t ? t.count : 0;
+      if (val === 0) return;
+      const barH = (val / maxVal) * ch;
+      const y = margin.top + ch - cumY - barH;
+      svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${colors[pi % colors.length]}" opacity="0.85" rx="2">`;
+      svg += `<title>${escapeHtml(truncate(p.template,60))}\n${src}: ${formatNumber(val)}</title></rect>`;
+      cumY += barH;
+    });
+    // X label
+    const lx = x + barW/2;
+    const shortSrc = src.length > 20 ? src.substring(0,18)+'…' : src;
+    svg += `<text x="${lx}" y="${H-margin.bottom+16}" text-anchor="middle" font-size="11" fill="#5f6672" transform="rotate(-30,${lx},${H-margin.bottom+16})">${escapeHtml(shortSrc)}</text>`;
+  });
+  svg += '</svg>';
+  wrap.innerHTML = svg;
+
+  // Legend
+  legend.innerHTML = topN.map((p, i) =>
+    `<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:2px;background:${colors[i%colors.length]};display:inline-block"></span>${escapeHtml(truncate(p.template,50))}</span>`
+  ).join('');
+}
+renderTimeline();
 
 function renderTable() {
   const tbody = document.getElementById('table-body');
