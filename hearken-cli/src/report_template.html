@@ -180,6 +180,12 @@ tr.data-row.open .expand-icon{transform:rotate(90deg);color:var(--accent)}
     <select id="group-filter" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;background:var(--surface);cursor:pointer">
       <option value="">All groups</option>
     </select>
+    <select id="tag-filter" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;background:var(--surface);cursor:pointer">
+      <option value="">All tags</option>
+      <option value="__tagged__">Tagged only</option>
+      <option value="__untagged__">Untagged only</option>
+    </select>
+    <button id="download-tags" style="padding:8px 16px;border:1px solid var(--accent);border-radius:var(--radius);font-size:13px;background:var(--accent-light);color:var(--accent-dark);cursor:pointer;font-weight:500" title="Download tags as JSON">🏷️ Export Tags</button>
     <div class="toolbar-info" id="toolbar-info"></div>
   </div>
 
@@ -194,6 +200,7 @@ tr.data-row.open .expand-icon{transform:rotate(90deg);color:var(--accent)}
           <th data-sort="pct" style="width:100px;text-align:right">Share <span class="sort-arrow">▲</span></th>
           <th style="width:120px">Distribution</th>
           <th style="width:140px">Trend</th>
+          <th style="width:160px">Tags</th>
         </tr>
       </thead>
       <tbody id="table-body"></tbody>
@@ -245,6 +252,67 @@ function renderSparkline(trend) {
   });
   svg += '</svg>';
   return svg;
+}
+
+// Tags management
+const patternTags = DATA.tags && typeof DATA.tags === 'object' ? {...DATA.tags} : {};
+
+function getTagsForPattern(id) {
+  return patternTags[String(id)] || [];
+}
+function renderTags(id) {
+  const tags = getTagsForPattern(id);
+  return tags.map(t =>
+    `<span style="display:inline-flex;align-items:center;gap:2px;font-size:11px;padding:1px 6px;background:var(--accent-light);color:var(--accent-dark);border-radius:10px;white-space:nowrap">${escapeHtml(t)}<span onclick="event.stopPropagation();removeTag(${id},'${escapeHtml(t)}')" style="cursor:pointer;font-size:13px;line-height:1;margin-left:2px" title="Remove tag">×</span></span>`
+  ).join(' ');
+}
+function addTag(id, tag) {
+  tag = tag.trim();
+  if (!tag) return;
+  const key = String(id);
+  if (!patternTags[key]) patternTags[key] = [];
+  if (!patternTags[key].includes(tag)) patternTags[key].push(tag);
+  refreshTagsUI(id);
+  refreshTagFilter();
+}
+function removeTag(id, tag) {
+  const key = String(id);
+  if (!patternTags[key]) return;
+  patternTags[key] = patternTags[key].filter(t => t !== tag);
+  if (patternTags[key].length === 0) delete patternTags[key];
+  refreshTagsUI(id);
+  refreshTagFilter();
+}
+function refreshTagsUI(id) {
+  const cell = document.querySelector(`.tags-cell[data-id="${id}"]`);
+  if (cell) {
+    const input = cell.querySelector('.tag-input');
+    cell.innerHTML = renderTags(id) + input.outerHTML;
+    const newInput = cell.querySelector('.tag-input');
+    newInput.onkeydown = function(event) {
+      if (event.key === 'Enter') { addTag(id, this.value); this.value = ''; event.stopPropagation(); }
+    };
+  }
+}
+function refreshTagFilter() {
+  const sel = document.getElementById('tag-filter');
+  const allTags = new Set();
+  Object.values(patternTags).forEach(tags => tags.forEach(t => allTags.add(t)));
+  const current = sel.value;
+  const opts = ['<option value="">All tags</option>',
+    '<option value="__tagged__">Tagged only</option>',
+    '<option value="__untagged__">Untagged only</option>'];
+  [...allTags].sort().forEach(t => opts.push(`<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`));
+  sel.innerHTML = opts.join('');
+  sel.value = current;
+}
+function downloadTags() {
+  const json = JSON.stringify(patternTags, null, 2);
+  const blob = new Blob([json], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'hearken-tags.json'; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // Render header
@@ -440,9 +508,15 @@ function renderTable() {
       <td class="pct-cell">${pct.toFixed(1)}%</td>
       <td><div class="bar-bg"><div class="bar-fill" style="width:${barW}%"></div></div></td>
       <td>${renderSparkline(p.trend)}</td>
+      <td class="tags-cell" data-id="${p.id}" onclick="event.stopPropagation()">
+        ${renderTags(p.id)}
+        <input type="text" class="tag-input" placeholder="+ tag" data-id="${p.id}"
+          style="width:60px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--surface)"
+          onkeydown="if(event.key==='Enter'){addTag(${p.id},this.value);this.value='';event.stopPropagation();}">
+      </td>
     </tr>
     <tr class="detail-row" id="detail-${p.id}">
-      <td colspan="7">
+      <td colspan="8">
         <div class="detail-content">
           <div class="detail-section">
             <div class="detail-label">Pattern Template
@@ -515,17 +589,26 @@ function copyPattern(id) {
 // Search + Group filter
 const searchInput = document.getElementById('search');
 const groupFilterSelect = document.getElementById('group-filter');
+const tagFilterSelect = document.getElementById('tag-filter');
 let searchTimeout;
 
 function applyFilters() {
   const q = searchInput.value.toLowerCase().trim();
   const groupVal = groupFilterSelect.value;
+  const tagVal = tagFilterSelect.value;
   let result = [...DATA.patterns];
   if (q) {
     result = result.filter(p => p.template.toLowerCase().includes(q));
   }
   if (groupVal) {
     result = result.filter(p => p.group === groupVal);
+  }
+  if (tagVal === '__tagged__') {
+    result = result.filter(p => getTagsForPattern(p.id).length > 0);
+  } else if (tagVal === '__untagged__') {
+    result = result.filter(p => getTagsForPattern(p.id).length === 0);
+  } else if (tagVal) {
+    result = result.filter(p => getTagsForPattern(p.id).includes(tagVal));
   }
   filtered = sortPatterns(result);
   renderTable();
@@ -537,6 +620,9 @@ searchInput.addEventListener('input', () => {
 });
 
 groupFilterSelect.addEventListener('change', applyFilters);
+tagFilterSelect.addEventListener('change', applyFilters);
+document.getElementById('download-tags').addEventListener('click', downloadTags);
+refreshTagFilter();
 
 // Sorting
 function sortPatterns(arr) {

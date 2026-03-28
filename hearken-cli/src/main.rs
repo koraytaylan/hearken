@@ -56,6 +56,9 @@ enum Commands {
         /// Only include patterns from these file groups (comma-separated)
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
+        /// Path to tags JSON file for pattern tagging (created if absent)
+        #[arg(long)]
+        tags_file: Option<String>,
     },
     /// Export patterns as JSON or CSV
     Export {
@@ -138,8 +141,8 @@ fn main() -> Result<()> {
         Commands::Stats {} => {
             show_stats(&storage, &cli.database)?;
         }
-        Commands::Report { output, samples, top, filter, group } => {
-            generate_report(&storage, &output, samples, top, filter, group)?;
+        Commands::Report { output, samples, top, filter, group, tags_file } => {
+            generate_report(&storage, &output, samples, top, filter, group, tags_file)?;
         }
         Commands::Export { format, output, samples, top, filter, group } => {
             export_patterns(&storage, &format, output.as_deref(), samples, top, filter, group)?;
@@ -735,7 +738,7 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: usize, top_n: usize, filter: Option<Vec<String>>, group_filter: Option<Vec<String>>) -> Result<()> {
+fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: usize, top_n: usize, filter: Option<Vec<String>>, group_filter: Option<Vec<String>>, tags_file: Option<String>) -> Result<()> {
     let start = Instant::now();
     println!("Generating report...");
 
@@ -795,6 +798,20 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
         output
     };
     let command = std::env::args().collect::<Vec<_>>().join(" ");
+    // Load existing tags from sidecar file
+    let tags: serde_json::Value = if let Some(ref tf) = tags_file {
+        if Path::new(tf).exists() {
+            let content = std::fs::read_to_string(tf)
+                .with_context(|| format!("Failed to read tags file: {}", tf))?;
+            serde_json::from_str(&content)
+                .with_context(|| format!("Failed to parse tags file: {}", tf))?
+        } else {
+            serde_json::json!({})
+        }
+    } else {
+        serde_json::json!({})
+    };
+
     let report_json = serde_json::json!({
         "pattern_count": pattern_count,
         "total_occurrences": total_occurrences,
@@ -810,8 +827,10 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
             "filter": filter,
             "group": group_filter,
             "output": output_path,
+            "tags_file": tags_file,
         },
         "patterns": pattern_data,
+        "tags": tags,
     });
 
     let json_str = serde_json::to_string(&report_json)
