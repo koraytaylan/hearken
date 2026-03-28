@@ -184,6 +184,7 @@ tr.data-row.open .expand-icon{transform:rotate(90deg);color:var(--accent)}
           <th data-sort="count" style="width:120px;text-align:right">Count <span class="sort-arrow">▲</span></th>
           <th data-sort="pct" style="width:100px;text-align:right">Share <span class="sort-arrow">▲</span></th>
           <th style="width:120px">Distribution</th>
+          <th style="width:140px">Trend</th>
         </tr>
       </thead>
       <tbody id="table-body"></tbody>
@@ -219,6 +220,22 @@ function formatNumber(n) {
 function truncate(s, max) {
   const first = s.split('\n')[0];
   return first.length > max ? first.substring(0, max) + '…' : first;
+}
+function renderSparkline(trend) {
+  if (!trend || trend.length === 0) return '<span style="color:#999">—</span>';
+  const maxVal = Math.max(...trend.map(t => t.count));
+  if (maxVal === 0) return '<span style="color:#999">—</span>';
+  const w = 120, h = 24, barGap = 1;
+  const barW = Math.max(2, Math.floor((w - (trend.length - 1) * barGap) / trend.length));
+  let svg = `<svg width="${w}" height="${h}" style="vertical-align:middle" title="${trend.map(t => t.source + ': ' + t.count).join(', ')}">`;
+  trend.forEach((t, i) => {
+    const barH = Math.max(1, (t.count / maxVal) * h);
+    const x = i * (barW + barGap);
+    const y = h - barH;
+    svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="#4f6ef7" opacity="0.8"><title>${escapeHtml(t.source)}: ${formatNumber(t.count)}</title></rect>`;
+  });
+  svg += '</svg>';
+  return svg;
 }
 
 // Render header
@@ -334,9 +351,10 @@ function renderTable() {
       <td class="count-cell">${formatNumber(p.count)}</td>
       <td class="pct-cell">${pct.toFixed(1)}%</td>
       <td><div class="bar-bg"><div class="bar-fill" style="width:${barW}%"></div></div></td>
+      <td>${renderSparkline(p.trend)}</td>
     </tr>
     <tr class="detail-row" id="detail-${p.id}">
-      <td colspan="6">
+      <td colspan="7">
         <div class="detail-content">
           <div class="detail-section">
             <div class="detail-label">Pattern Template

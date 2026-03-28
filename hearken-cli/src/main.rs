@@ -667,6 +667,11 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
     }
 
     println!("  Fetching samples for {} patterns...", patterns.len());
+
+    // Fetch trend data (per-source counts) for all patterns
+    let pattern_ids: Vec<i64> = patterns.iter().map(|(id, _, _, _)| *id).collect();
+    let trends = storage.get_pattern_trends(&pattern_ids).unwrap_or_default();
+
     let mut pattern_data = Vec::with_capacity(patterns.len());
     for (id, template, count, group_name) in &patterns {
         let raw_samples = storage.get_pattern_samples(*id, samples_per_pattern)
@@ -678,12 +683,16 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
                     .and_then(|f| f.to_str()).unwrap_or(source_path),
             })
         }).collect();
+        let trend = trends.get(id).map(|t| {
+            t.iter().map(|(name, cnt)| serde_json::json!({"source": name, "count": cnt})).collect::<Vec<_>>()
+        }).unwrap_or_default();
         pattern_data.push(serde_json::json!({
             "id": id,
             "template": template,
             "count": count,
             "group": group_name,
             "samples": samples,
+            "trend": trend,
         }));
     }
 

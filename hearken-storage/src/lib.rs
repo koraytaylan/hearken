@@ -1,5 +1,6 @@
 use hearken_core::LogSource;
 use rusqlite::{params, Connection, OpenFlags, Result as RusqliteResult};
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -239,6 +240,48 @@ impl Storage {
         for row in group_rows { groups.push(row?); }
 
         Ok((pattern_count, total_occurrences, sources, groups))
+    }
+
+    /// Returns per-source occurrence counts for given pattern IDs.
+    /// Returns: HashMap<pattern_id, Vec<(source_file_name, count)>> sorted by source path.
+    pub fn get_pattern_trends(
+        &self,
+        pattern_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<(String, i64)>>, StorageError> {
+        if pattern_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders: Vec<String> = pattern_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT o.pattern_id, ls.file_path, COUNT(*) as cnt
+             FROM occurrences o
+             JOIN log_sources ls ON o.log_source_id = ls.id
+             WHERE o.pattern_id IN ({})
+             GROUP BY o.pattern_id, o.log_source_id
+             ORDER BY o.pattern_id, ls.file_path",
+            placeholders.join(", ")
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> = pattern_ids.iter()
+            .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter()
+            .map(|p| p.as_ref())
+            .collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        let mut result: HashMap<i64, Vec<(String, i64)>> = HashMap::new();
+        for row in rows {
+            let (pid, path, cnt) = row?;
+            let file_name = std::path::Path::new(&path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(&path)
+                .to_string();
+            result.entry(pid).or_default().push((file_name, cnt));
+        }
+        Ok(result)
     }
 }
 
