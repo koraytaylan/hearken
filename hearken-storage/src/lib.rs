@@ -397,6 +397,29 @@ impl Storage {
         Ok(result)
     }
 
+    /// Returns occurrences with timestamps for correlation analysis.
+    /// Only returns patterns with occurrence_count >= min_count and non-null timestamps.
+    /// Returns: Vec<(pattern_id, entry_timestamp, group_name, template_preview)>
+    pub fn get_timed_occurrences(
+        &self,
+        min_count: i64,
+    ) -> Result<Vec<(i64, i64, String, String)>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT o.pattern_id, o.entry_timestamp, fg.name, substr(p.template, 1, 100)
+             FROM occurrences o
+             JOIN patterns p ON o.pattern_id = p.id
+             JOIN file_groups fg ON p.file_group_id = fg.id
+             WHERE o.entry_timestamp IS NOT NULL AND p.occurrence_count >= ?
+             ORDER BY o.entry_timestamp"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![min_count], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+        let mut results = Vec::new();
+        for row in rows { results.push(row?); }
+        Ok(results)
+    }
+
     /// Count source files per file group.
     pub fn get_source_counts_per_group(&self) -> Result<HashMap<String, usize>, StorageError> {
         let mut stmt = self.conn.prepare(
@@ -410,6 +433,50 @@ impl Storage {
         let mut result = HashMap::new();
         for row in rows { let (g, c) = row?; result.insert(g, c); }
         Ok(result)
+    }
+
+    /// Returns variables for top patterns, for root-cause clustering.
+    /// Returns: Vec<(pattern_id, group_name, template_preview, variables_string)>
+    pub fn get_variable_index(
+        &self,
+        group_filter: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(i64, String, String, String)>, StorageError> {
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(g) = group_filter {
+            (
+                "SELECT o.pattern_id, fg.name, substr(p.template, 1, 120), o.variables
+                 FROM occurrences o
+                 JOIN patterns p ON o.pattern_id = p.id
+                 JOIN file_groups fg ON p.file_group_id = fg.id
+                 WHERE o.variables IS NOT NULL AND o.variables != ''
+                   AND fg.name = ?
+                   AND p.id IN (SELECT id FROM patterns WHERE occurrence_count > 0 ORDER BY occurrence_count DESC LIMIT ?)
+                 ".to_string(),
+                vec![
+                    Box::new(g.to_string()) as Box<dyn rusqlite::types::ToSql>,
+                    Box::new(limit as i64) as Box<dyn rusqlite::types::ToSql>,
+                ],
+            )
+        } else {
+            (
+                "SELECT o.pattern_id, fg.name, substr(p.template, 1, 120), o.variables
+                 FROM occurrences o
+                 JOIN patterns p ON o.pattern_id = p.id
+                 JOIN file_groups fg ON p.file_group_id = fg.id
+                 WHERE o.variables IS NOT NULL AND o.variables != ''
+                   AND p.id IN (SELECT id FROM patterns WHERE occurrence_count > 0 ORDER BY occurrence_count DESC LIMIT ?)
+                 ".to_string(),
+                vec![Box::new(limit as i64) as Box<dyn rusqlite::types::ToSql>],
+            )
+        };
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+        let mut results = Vec::new();
+        for row in rows { results.push(row?); }
+        Ok(results)
     }
 }
 

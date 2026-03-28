@@ -191,6 +191,9 @@ enum Commands {
         /// Output format (text or json)
         #[arg(long, default_value = "text")]
         format: String,
+        /// Matching mode: structural (same token count, position-based) or semantic (TF-IDF, any length)
+        #[arg(long, default_value = "structural")]
+        mode: String,
     },
     /// Detect anomalous patterns (single-source or statistical outliers)
     Anomalies {
@@ -235,6 +238,39 @@ enum Commands {
         /// Only check patterns from this file group
         #[arg(long)]
         group: Option<String>,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Find correlated patterns across file groups within time windows
+    Correlate {
+        /// Time window in seconds for co-occurrence detection
+        #[arg(long, default_value_t = 60)]
+        window: u64,
+        /// Maximum number of correlations to display
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        /// Minimum pattern occurrence count to include
+        #[arg(long, default_value_t = 10)]
+        min_count: i64,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Cluster patterns by shared variable values (IPs, request IDs, threads)
+    Cluster {
+        /// Minimum number of shared variables to link patterns
+        #[arg(long, default_value_t = 3)]
+        min_shared: usize,
+        /// Maximum number of clusters to display
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        /// Only check patterns from this file group
+        #[arg(long)]
+        group: Option<String>,
+        /// Maximum number of top patterns to analyze
+        #[arg(long, default_value_t = 200)]
+        pattern_limit: usize,
         /// Output format (text or json)
         #[arg(long, default_value = "text")]
         format: String,
@@ -349,11 +385,11 @@ fn main() -> Result<()> {
             drop(storage);
             diff_databases(&before, &after, &format)?;
         }
-        Commands::Dedup { threshold, group, format } => {
+        Commands::Dedup { threshold, group, format, mode } => {
             if threshold < 0.0 || threshold > 1.0 {
                 bail!("--threshold must be between 0.0 and 1.0");
             }
-            find_duplicates(&storage, threshold, group.as_deref(), &format)?;
+            find_duplicates(&storage, threshold, group.as_deref(), &format, &mode)?;
         }
         Commands::Anomalies { group, top, format, tags_file, include_suppressed } => {
             detect_anomalies(&storage, group.as_deref(), top, &format, tags_file.as_deref(), include_suppressed)?;
@@ -376,6 +412,12 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Commands::Correlate { window, top, min_count, format } => {
+            find_correlations(&storage, window, top, min_count, &format)?;
+        }
+        Commands::Cluster { min_shared, top, group, pattern_limit, format } => {
+            find_clusters(&storage, min_shared, top, group.as_deref(), pattern_limit, &format)?;
+        }
         Commands::Baseline { action } => {
             match action {
                 BaselineAction::Save { output } => {
@@ -387,6 +429,146 @@ fn main() -> Result<()> {
                     format_diff(&diff, &baseline, &cli.database, &format)?;
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+struct Correlation {
+    pattern_a: i64,
+    template_a: String,
+    group_a: String,
+    pattern_b: i64,
+    template_b: String,
+    group_b: String,
+    co_occurrences: usize,
+    confidence: f64,
+    median_lag_secs: f64,
+}
+
+fn find_correlations(
+    storage: &Storage,
+    window_secs: u64,
+    top: usize,
+    min_count: i64,
+    format: &str,
+) -> Result<()> {
+    println!("Finding correlations (window={}s, min_count={})...", window_secs, min_count);
+
+    let occurrences = storage.get_timed_occurrences(min_count)?;
+    if occurrences.is_empty() {
+        println!("No timestamped occurrences found. Process logs with timestamps first.");
+        return Ok(());
+    }
+    println!("  Analyzing {} timestamped occurrences...", occurrences.len());
+
+    // Build pattern metadata lookup: id -> (group, template)
+    let mut pattern_meta: HashMap<i64, (String, String)> = HashMap::new();
+    for (pid, _, group, tmpl) in &occurrences {
+        pattern_meta.entry(*pid).or_insert_with(|| (group.clone(), tmpl.clone()));
+    }
+
+    // Count total occurrences per pattern (for expected rate calculation)
+    let mut pattern_counts: HashMap<i64, usize> = HashMap::new();
+    for (pid, _, _, _) in &occurrences {
+        *pattern_counts.entry(*pid).or_insert(0) += 1;
+    }
+
+    // Sliding window co-occurrence detection (only cross-group pairs)
+    let window = window_secs as i64;
+    let n = occurrences.len();
+
+    // Cap analysis to avoid O(n²) blowup
+    let max_occurrences = 500_000;
+    let occ_slice = if n > max_occurrences { &occurrences[..max_occurrences] } else { &occurrences[..] };
+    let n = occ_slice.len();
+
+    let mut co_occur: HashMap<(i64, i64), Vec<i64>> = HashMap::new();
+
+    for i in 0..n {
+        let (pid_i, ts_i, group_i, _) = &occ_slice[i];
+        for k in (i + 1)..n {
+            let (pid_k, ts_k, group_k, _) = &occ_slice[k];
+            if *ts_k > ts_i + window { break; }
+            if group_k == group_i { continue; }
+            if pid_k == pid_i { continue; }
+
+            let (a, b) = if pid_i < pid_k { (*pid_i, *pid_k) } else { (*pid_k, *pid_i) };
+            let lag = (ts_k - ts_i).abs();
+            let lags = co_occur.entry((a, b)).or_default();
+            if lags.len() < 10000 {
+                lags.push(lag);
+            }
+        }
+    }
+
+    if co_occur.is_empty() {
+        println!("No cross-group correlations found within {}s window.", window_secs);
+        return Ok(());
+    }
+
+    // Compute total time span for expected rate
+    let time_span = (occ_slice.last().unwrap().1 - occ_slice.first().unwrap().1).max(1) as f64;
+
+    let mut correlations: Vec<Correlation> = Vec::new();
+    for ((a, b), lags) in &co_occur {
+        let count_a = *pattern_counts.get(a).unwrap_or(&1) as f64;
+        let count_b = *pattern_counts.get(b).unwrap_or(&1) as f64;
+        // Expected co-occurrences by chance: (count_a * count_b * window) / time_span
+        let expected = (count_a * count_b * window as f64) / time_span;
+        let observed = lags.len() as f64;
+        let confidence = if expected > 0.0 { observed / expected } else { observed };
+
+        if lags.len() >= 3 && confidence >= 1.5 {
+            let (group_a, tmpl_a) = pattern_meta.get(a).cloned().unwrap_or_default();
+            let (group_b, tmpl_b) = pattern_meta.get(b).cloned().unwrap_or_default();
+            let mut sorted_lags = lags.clone();
+            sorted_lags.sort();
+            let median_lag = sorted_lags[sorted_lags.len() / 2] as f64;
+
+            correlations.push(Correlation {
+                pattern_a: *a,
+                template_a: tmpl_a,
+                group_a,
+                pattern_b: *b,
+                template_b: tmpl_b,
+                group_b,
+                co_occurrences: lags.len(),
+                confidence,
+                median_lag_secs: median_lag,
+            });
+        }
+    }
+
+    correlations.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+    correlations.truncate(top);
+
+    if correlations.is_empty() {
+        println!("No significant correlations found.");
+        return Ok(());
+    }
+
+    if format == "json" {
+        let items: Vec<serde_json::Value> = correlations.iter().map(|c| {
+            serde_json::json!({
+                "pattern_a": {"id": c.pattern_a, "group": c.group_a, "template": c.template_a},
+                "pattern_b": {"id": c.pattern_b, "group": c.group_b, "template": c.template_b},
+                "co_occurrences": c.co_occurrences,
+                "confidence": format!("{:.1}x", c.confidence),
+                "median_lag_secs": c.median_lag_secs,
+            })
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+    } else {
+        println!("═══ Pattern Correlations (top {}, window={}s) ═══\n", correlations.len(), window_secs);
+        for (i, c) in correlations.iter().enumerate() {
+            println!("  {}. [{:.1}x confidence, {} co-occurrences, median lag: {:.1}s]",
+                i + 1, c.confidence, c.co_occurrences, c.median_lag_secs);
+            let preview_a = if c.template_a.len() > 80 { format!("{}…", &c.template_a[..80]) } else { c.template_a.clone() };
+            let preview_b = if c.template_b.len() > 80 { format!("{}…", &c.template_b[..80]) } else { c.template_b.clone() };
+            println!("     A [{}]: {}", c.group_a, preview_a);
+            println!("     B [{}]: {}\n", c.group_b, preview_b);
         }
     }
 
@@ -1480,8 +1662,10 @@ fn find_duplicates(
     threshold: f64,
     group_filter: Option<&str>,
     format: &str,
+    mode: &str,
 ) -> Result<()> {
     use hearken_core::tokenize;
+    use hearken_ml::semantic_similarity;
 
     let patterns = storage.get_patterns_for_dedup(group_filter)?;
     if patterns.is_empty() {
@@ -1508,22 +1692,47 @@ fn find_duplicates(
 
     let mut total_pairs = 0usize;
 
-    // Compute all pairwise similarities and union duplicates
-    for group_patterns in by_group.values() {
-        if group_patterns.len() < 2 { continue; }
-        let mut by_len: HashMap<usize, Vec<usize>> = HashMap::new();
-        for (i, (_, tokens, _)) in group_patterns.iter().enumerate() {
-            by_len.entry(tokens.len()).or_default().push(i);
-        }
-        for indices in by_len.values() {
-            for (ai, &i) in indices.iter().enumerate() {
-                for &j in &indices[ai + 1..] {
-                    let sim = template_similarity(&group_patterns[i].1, &group_patterns[j].1);
+    if mode == "semantic" {
+        // Semantic mode: TF-IDF cosine similarity, works across different lengths
+        for group_patterns in by_group.values_mut() {
+            if group_patterns.len() < 2 { continue; }
+            // Cap at 1000 for O(n²) tractability
+            group_patterns.truncate(1000);
+
+            // Compute IDF across all templates in this group
+            let all_tokens: Vec<Vec<String>> = group_patterns.iter().map(|(_, t, _)| t.clone()).collect();
+            let idf = hearken_ml::compute_idf(&all_tokens);
+
+            for i in 0..group_patterns.len() {
+                for j in (i + 1)..group_patterns.len() {
+                    let sim = semantic_similarity(&group_patterns[i].1, &group_patterns[j].1, &idf);
                     if sim >= threshold {
                         let ra = uf_find(&mut parent, group_patterns[i].0);
                         let rb = uf_find(&mut parent, group_patterns[j].0);
                         if ra != rb { parent.insert(rb, ra); }
                         total_pairs += 1;
+                    }
+                }
+            }
+        }
+    } else {
+        // Structural mode: same-length bucketing (existing logic)
+        for group_patterns in by_group.values() {
+            if group_patterns.len() < 2 { continue; }
+            let mut by_len: HashMap<usize, Vec<usize>> = HashMap::new();
+            for (i, (_, tokens, _)) in group_patterns.iter().enumerate() {
+                by_len.entry(tokens.len()).or_default().push(i);
+            }
+            for indices in by_len.values() {
+                for (ai, &i) in indices.iter().enumerate() {
+                    for &j in &indices[ai + 1..] {
+                        let sim = template_similarity(&group_patterns[i].1, &group_patterns[j].1);
+                        if sim >= threshold {
+                            let ra = uf_find(&mut parent, group_patterns[i].0);
+                            let rb = uf_find(&mut parent, group_patterns[j].0);
+                            if ra != rb { parent.insert(rb, ra); }
+                            total_pairs += 1;
+                        }
                     }
                 }
             }
@@ -1582,6 +1791,164 @@ fn find_duplicates(
             println!();
         }
         println!("Found {} duplicate cluster(s) with {} similar pair(s) total.", all_clusters.len(), total_pairs);
+    }
+
+    Ok(())
+}
+
+fn find_clusters(
+    storage: &Storage,
+    min_shared: usize,
+    top: usize,
+    group_filter: Option<&str>,
+    pattern_limit: usize,
+    format: &str,
+) -> Result<()> {
+    println!("Finding root-cause clusters (min_shared={}, pattern_limit={})...", min_shared, pattern_limit);
+
+    let variable_data = storage.get_variable_index(group_filter, pattern_limit)?;
+    if variable_data.is_empty() {
+        println!("No variable data found. Process logs first.");
+        return Ok(());
+    }
+
+    // Build pattern metadata: id -> (group, template)
+    let mut pattern_meta: HashMap<i64, (String, String)> = HashMap::new();
+    for (pid, group, tmpl, _) in &variable_data {
+        pattern_meta.entry(*pid).or_insert_with(|| (group.clone(), tmpl.clone()));
+    }
+
+    let total_patterns = pattern_meta.len();
+    println!("  Analyzing variables from {} patterns ({} occurrences)...", total_patterns, variable_data.len());
+
+    // Build inverted index: variable_value -> HashSet<pattern_id>
+    let mut var_to_patterns: HashMap<String, HashSet<i64>> = HashMap::new();
+    for (pid, _, _, vars_str) in &variable_data {
+        for var in vars_str.split('\t') {
+            let var = var.trim();
+            if var.is_empty() { continue; }
+            if var.len() <= 1 { continue; }
+            if var.len() < 5 && var.chars().all(|c| c.is_ascii_digit()) {
+                if let Ok(n) = var.parse::<i64>() {
+                    if n < 1000 { continue; }
+                }
+            }
+            var_to_patterns.entry(var.to_string()).or_default().insert(*pid);
+        }
+    }
+
+    // Filter out high-cardinality values (>50% of patterns)
+    let cardinality_threshold = total_patterns / 2;
+    var_to_patterns.retain(|_, pids| pids.len() >= 2 && pids.len() <= cardinality_threshold.max(2));
+
+    if var_to_patterns.is_empty() {
+        println!("No shared variable values found across patterns.");
+        return Ok(());
+    }
+
+    // Count shared variable values between pattern pairs
+    let mut pair_shared: HashMap<(i64, i64), Vec<String>> = HashMap::new();
+    for (val, pids) in &var_to_patterns {
+        let pids_vec: Vec<i64> = pids.iter().copied().collect();
+        for i in 0..pids_vec.len() {
+            for j in (i+1)..pids_vec.len() {
+                let (a, b) = if pids_vec[i] < pids_vec[j] {
+                    (pids_vec[i], pids_vec[j])
+                } else {
+                    (pids_vec[j], pids_vec[i])
+                };
+                let shared = pair_shared.entry((a, b)).or_default();
+                if shared.len() < 20 {
+                    shared.push(val.clone());
+                }
+            }
+        }
+    }
+
+    // Union-Find clustering for pairs with >= min_shared values
+    let mut parent: HashMap<i64, i64> = HashMap::new();
+
+    fn uf_find(parent: &mut HashMap<i64, i64>, x: i64) -> i64 {
+        let p = *parent.get(&x).unwrap_or(&x);
+        if p == x { return x; }
+        let root = uf_find(parent, p);
+        parent.insert(x, root);
+        root
+    }
+
+    for ((a, b), shared) in &pair_shared {
+        if shared.len() >= min_shared {
+            let ra = uf_find(&mut parent, *a);
+            let rb = uf_find(&mut parent, *b);
+            if ra != rb { parent.insert(rb, ra); }
+        }
+    }
+
+    // Gather clusters
+    let mut clusters_map: HashMap<i64, Vec<i64>> = HashMap::new();
+    for pid in pattern_meta.keys() {
+        let root = uf_find(&mut parent, *pid);
+        clusters_map.entry(root).or_default().push(*pid);
+    }
+
+    struct RootCauseCluster {
+        patterns: Vec<(i64, String, String)>,
+        shared_values: Vec<String>,
+    }
+
+    let mut clusters: Vec<RootCauseCluster> = Vec::new();
+    for members in clusters_map.values() {
+        if members.len() < 2 { continue; }
+        let patterns: Vec<(i64, String, String)> = members.iter().map(|pid| {
+            let (group, tmpl) = pattern_meta.get(pid).cloned().unwrap_or_default();
+            (*pid, group, tmpl)
+        }).collect();
+
+        let member_set: HashSet<i64> = members.iter().copied().collect();
+        let mut shared: Vec<String> = Vec::new();
+        for (val, pids) in &var_to_patterns {
+            if pids.iter().filter(|p| member_set.contains(p)).count() >= 2 {
+                if shared.len() < 10 {
+                    shared.push(val.clone());
+                }
+            }
+        }
+
+        clusters.push(RootCauseCluster { patterns, shared_values: shared });
+    }
+
+    clusters.sort_by(|a, b| b.patterns.len().cmp(&a.patterns.len()));
+    clusters.truncate(top);
+
+    if clusters.is_empty() {
+        println!("No root-cause clusters found (min_shared={}).", min_shared);
+        return Ok(());
+    }
+
+    if format == "json" {
+        let items: Vec<serde_json::Value> = clusters.iter().map(|c| {
+            serde_json::json!({
+                "patterns": c.patterns.iter().map(|(id, group, tmpl)| {
+                    serde_json::json!({"id": id, "group": group, "template": tmpl})
+                }).collect::<Vec<_>>(),
+                "shared_values": c.shared_values,
+            })
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+    } else {
+        println!("═══ Root-Cause Clusters (top {}) ═══\n", clusters.len());
+        for (i, c) in clusters.iter().enumerate() {
+            println!("  Cluster {} ({} patterns):", i + 1, c.patterns.len());
+            if !c.shared_values.is_empty() {
+                let preview: Vec<&str> = c.shared_values.iter().take(5).map(|s| s.as_str()).collect();
+                println!("    Shared values: {}", preview.join(", "));
+            }
+            for (id, group, tmpl) in &c.patterns {
+                let preview = if tmpl.len() > 80 { format!("{}…", &tmpl[..80]) } else { tmpl.clone() };
+                println!("    [id={}, {}] {}", id, group, preview);
+            }
+            println!();
+        }
     }
 
     Ok(())

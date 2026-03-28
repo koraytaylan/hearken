@@ -471,6 +471,29 @@ fn test_check_command_fail() {
 }
 
 #[test]
+fn test_dedup_semantic_mode() {
+    let dir = TempDir::new().unwrap();
+    let log_file = dir.path().join("app.log");
+    let db_file = dir.path().join("test.db");
+
+    fs::write(&log_file, generate_log_lines(200, "SemanticApp")).unwrap();
+
+    // Process
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process", log_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // Run dedup in semantic mode
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "dedup", "--mode", "semantic", "--threshold", "0.3"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Semantic dedup failed: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn test_baseline_save_and_compare() {
     let dir = TempDir::new().unwrap();
     let log_file = dir.path().join("app.log");
@@ -504,4 +527,56 @@ fn test_baseline_save_and_compare() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "Baseline compare failed: {}", stdout);
     assert!(stdout.contains("0 new"), "Should show no new patterns: {}", stdout);
+}
+
+#[test]
+fn test_cluster_command() {
+    let dir = TempDir::new().unwrap();
+    let log_file = dir.path().join("app.log");
+    let db_file = dir.path().join("test.db");
+
+    fs::write(&log_file, generate_log_lines(200, "ClusterApp")).unwrap();
+
+    // Process
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process", log_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // Run cluster
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "cluster", "--min-shared", "1"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Cluster failed: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_correlate_command() {
+    let dir = TempDir::new().unwrap();
+    let db_file = dir.path().join("test.db");
+    let log1 = dir.path().join("error.log");
+    let log2 = dir.path().join("access.log");
+
+    // Create two log files with correlated timestamps
+    fs::write(&log1, generate_log_lines(100, "ErrorApp")).unwrap();
+    fs::write(&log2, generate_log_lines(100, "AccessApp")).unwrap();
+
+    // Process both
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process",
+               log1.to_str().unwrap(), log2.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Process failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    // Run correlate
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "correlate", "--window", "300", "--min-count", "1"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Correlate failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Finding correlations"), "Should show progress: {}", stdout);
 }

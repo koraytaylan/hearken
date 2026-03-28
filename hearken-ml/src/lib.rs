@@ -1,5 +1,5 @@
 use hearken_core::{LogTemplate, tokenize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -24,6 +24,75 @@ pub fn template_similarity(a: &[String], b: &[String]) -> f64 {
         if ta == tb || ta == "<*>" || tb == "<*>" { matches += 1; }
     }
     matches as f64 / a.len() as f64
+}
+
+/// Computes semantic similarity between two template token vectors using cosine similarity.
+/// Unlike `template_similarity`, this works across different token lengths.
+/// `idf` maps token -> inverse document frequency weight (higher = rarer = more important).
+/// Tokens appearing in >80% of templates get near-zero weight.
+pub fn semantic_similarity(a: &[String], b: &[String], idf: &HashMap<String, f64>) -> f64 {
+    let vec_a = tfidf_vector(a, idf);
+    let vec_b = tfidf_vector(b, idf);
+
+    let mut dot = 0.0f64;
+    let mut norm_a = 0.0f64;
+    let mut norm_b = 0.0f64;
+
+    let all_keys: HashSet<&String> = vec_a.keys().chain(vec_b.keys()).collect();
+    for key in all_keys {
+        let va = vec_a.get(key).copied().unwrap_or(0.0);
+        let vb = vec_b.get(key).copied().unwrap_or(0.0);
+        dot += va * vb;
+        norm_a += va * va;
+        norm_b += vb * vb;
+    }
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+
+fn tfidf_vector(tokens: &[String], idf: &HashMap<String, f64>) -> HashMap<String, f64> {
+    let mut tf: HashMap<String, f64> = HashMap::new();
+    let count = tokens.len() as f64;
+    if count == 0.0 { return tf; }
+
+    for t in tokens {
+        if t == "<*>" || t == "\n" { continue; }
+        *tf.entry(t.clone()).or_insert(0.0) += 1.0;
+    }
+
+    for (token, freq) in tf.iter_mut() {
+        *freq = (*freq / count) * idf.get(token).copied().unwrap_or(1.0);
+    }
+    tf
+}
+
+/// Computes IDF weights from a collection of template token vectors.
+/// IDF = log(N / df) where df is the number of templates containing the token.
+pub fn compute_idf(templates: &[Vec<String>]) -> HashMap<String, f64> {
+    let n = templates.len() as f64;
+    if n == 0.0 { return HashMap::new(); }
+
+    let mut df: HashMap<String, usize> = HashMap::new();
+    for tokens in templates {
+        let unique: HashSet<&String> = tokens.iter().filter(|t| *t != "<*>" && *t != "\n").collect();
+        for t in unique {
+            *df.entry(t.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let mut idf = HashMap::new();
+    for (token, count) in df {
+        let weight = (n / count as f64).ln();
+        if count as f64 / n > 0.8 {
+            idf.insert(token, weight * 0.1);
+        } else {
+            idf.insert(token, weight);
+        }
+    }
+    idf
 }
 
 #[derive(Clone, Debug)]
@@ -379,5 +448,40 @@ mod tests {
         let t2: Vec<&str> = vec!["error", "\n", "at", "Foo.bar()", "[module:1.0]", "\n", "at"];
         parser.parse_tokens(&t2, None);
         assert_eq!(parser.templates.len(), 2);
+    }
+
+    #[test]
+    fn test_semantic_similarity_identical() {
+        let idf = HashMap::from([("User".to_string(), 1.0), ("logged".to_string(), 1.0), ("in".to_string(), 0.5)]);
+        let a = vec!["User".to_string(), "<*>".to_string(), "logged".to_string(), "in".to_string()];
+        let b = a.clone();
+        assert!((semantic_similarity(&a, &b, &idf) - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_semantic_similarity_different_lengths() {
+        let idf = HashMap::from([
+            ("connection".to_string(), 2.0),
+            ("refused".to_string(), 1.5),
+            ("timeout".to_string(), 1.5),
+            ("from".to_string(), 0.3),
+        ]);
+        let a = vec!["connection".to_string(), "refused".to_string()];
+        let b = vec!["connection".to_string(), "timeout".to_string(), "from".to_string(), "<*>".to_string()];
+        let sim = semantic_similarity(&a, &b, &idf);
+        assert!(sim > 0.3, "Should have some similarity due to shared 'connection': {}", sim);
+        assert!(sim < 0.9, "Should not be too similar: {}", sim);
+    }
+
+    #[test]
+    fn test_compute_idf() {
+        let templates = vec![
+            vec!["User".to_string(), "<*>".to_string(), "logged".to_string(), "in".to_string()],
+            vec!["User".to_string(), "<*>".to_string(), "logged".to_string(), "out".to_string()],
+            vec!["Connection".to_string(), "refused".to_string()],
+        ];
+        let idf = compute_idf(&templates);
+        // "User" appears in 2/3 templates, "Connection" in 1/3
+        assert!(idf["Connection"] > idf["User"], "Rarer token should have higher IDF");
     }
 }
