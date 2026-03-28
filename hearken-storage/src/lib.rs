@@ -323,6 +323,80 @@ impl Storage {
         for row in rows { results.push(row?); }
         Ok(results)
     }
+    /// Returns true if any occurrences have a non-NULL entry_timestamp.
+    pub fn has_timestamps(&self) -> Result<bool, StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM occurrences WHERE entry_timestamp IS NOT NULL LIMIT 1)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Returns per-time-bucket occurrence counts for given pattern IDs.
+    /// bucket: "hour", "day", or "auto" (auto = hourly if range < 48h, else daily).
+    /// Returns: HashMap<pattern_id, Vec<(bucket_label, count)>> sorted by bucket.
+    pub fn get_pattern_time_series(
+        &self,
+        pattern_ids: &[i64],
+        bucket: &str,
+    ) -> Result<HashMap<i64, Vec<(String, i64)>>, StorageError> {
+        if pattern_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let fmt = match bucket {
+            "hour" => "%Y-%m-%d %H:00".to_string(),
+            "day" => "%Y-%m-%d".to_string(),
+            "auto" | _ => {
+                let row: (Option<i64>, Option<i64>) = self.conn.query_row(
+                    "SELECT MIN(entry_timestamp), MAX(entry_timestamp) FROM occurrences WHERE entry_timestamp IS NOT NULL",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                match row {
+                    (Some(min_ts), Some(max_ts)) if max_ts - min_ts < 48 * 3600 => {
+                        "%Y-%m-%d %H:00".to_string()
+                    }
+                    _ => "%Y-%m-%d".to_string(),
+                }
+            }
+        };
+
+        let mut result: HashMap<i64, Vec<(String, i64)>> = HashMap::new();
+        for chunk in pattern_ids.chunks(500) {
+            let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "SELECT o.pattern_id, strftime('{}', o.entry_timestamp, 'unixepoch') AS bucket, COUNT(*) as cnt \
+                 FROM occurrences o \
+                 WHERE o.entry_timestamp IS NOT NULL AND o.pattern_id IN ({}) \
+                 GROUP BY o.pattern_id, bucket \
+                 ORDER BY o.pattern_id, bucket",
+                fmt,
+                placeholders.join(", ")
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params: Vec<Box<dyn rusqlite::types::ToSql>> = chunk
+                .iter()
+                .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+                .collect();
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (pid, bucket_label, cnt) = row?;
+                result.entry(pid).or_default().push((bucket_label, cnt));
+            }
+        }
+        Ok(result)
+    }
+
     /// Count source files per file group.
     pub fn get_source_counts_per_group(&self) -> Result<HashMap<String, usize>, StorageError> {
         let mut stmt = self.conn.prepare(

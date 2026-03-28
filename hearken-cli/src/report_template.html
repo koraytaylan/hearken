@@ -142,6 +142,11 @@ tr.data-row.open .expand-icon{transform:rotate(90deg);color:var(--accent)}
 .footer-command{font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;
   font-size:11px;color:var(--text-secondary);opacity:.6;margin-top:6px;word-break:break-all}
 
+/* Suppressed patterns */
+tr.suppressed{opacity:0.4}
+tr.suppressed td:nth-child(3){text-decoration:line-through}
+tr.suppressed:not(.show-suppressed){display:none}
+
 /* Parameter pills */
 .params{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .pill{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;
@@ -186,6 +191,9 @@ tr.data-row.open .expand-icon{transform:rotate(90deg);color:var(--accent)}
       <option value="__untagged__">Untagged only</option>
     </select>
     <button id="download-tags" style="padding:8px 16px;border:1px solid var(--accent);border-radius:var(--radius);font-size:13px;background:var(--accent-light);color:var(--accent-dark);cursor:pointer;font-weight:500" title="Download tags as JSON">🏷️ Export Tags</button>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="showSuppressed" onchange="applyFilters()"> Show suppressed
+    </label>
     <div class="toolbar-info" id="toolbar-info"></div>
   </div>
 
@@ -241,14 +249,16 @@ function renderSparkline(trend) {
   if (!trend || trend.length === 0) return '<span style="color:#999">—</span>';
   const maxVal = Math.max(...trend.map(t => t.count));
   if (maxVal === 0) return '<span style="color:#999">—</span>';
+  const isTimeBased = trend[0].bucket !== undefined;
   const w = 120, h = 24, barGap = 1;
   const barW = Math.max(2, Math.floor((w - (trend.length - 1) * barGap) / trend.length));
-  let svg = `<svg width="${w}" height="${h}" style="vertical-align:middle" title="${trend.map(t => t.source + ': ' + t.count).join(', ')}">`;
+  let svg = `<svg width="${w}" height="${h}" style="vertical-align:middle" title="${trend.map(t => (isTimeBased ? t.bucket : t.source) + ': ' + t.count).join(', ')}">`;
   trend.forEach((t, i) => {
     const barH = Math.max(1, (t.count / maxVal) * h);
     const x = i * (barW + barGap);
     const y = h - barH;
-    svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="#4f6ef7" opacity="0.8"><title>${escapeHtml(t.source)}: ${formatNumber(t.count)}</title></rect>`;
+    const label = isTimeBased ? t.bucket : escapeHtml(t.source);
+    svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${isTimeBased ? '#06b6d4' : '#4f6ef7'}" opacity="0.8"><title>${label}: ${formatNumber(t.count)}</title></rect>`;
   });
   svg += '</svg>';
   return svg;
@@ -262,9 +272,12 @@ function getTagsForPattern(id) {
 }
 function renderTags(id) {
   const tags = getTagsForPattern(id);
+  const isSuppressed = tags.includes('suppress') || tags.includes('ignore');
+  const suppressBtn = isSuppressed ? '' :
+    `<span onclick="event.stopPropagation();addTag(${id},'suppress');applyFilters();" style="cursor:pointer;font-size:13px;opacity:0.4;margin-left:2px" title="Suppress this pattern">🔇</span>`;
   return tags.map(t =>
-    `<span style="display:inline-flex;align-items:center;gap:2px;font-size:11px;padding:1px 6px;background:var(--accent-light);color:var(--accent-dark);border-radius:10px;white-space:nowrap">${escapeHtml(t)}<span onclick="event.stopPropagation();removeTag(${id},'${escapeHtml(t)}')" style="cursor:pointer;font-size:13px;line-height:1;margin-left:2px" title="Remove tag">×</span></span>`
-  ).join(' ');
+    `<span style="display:inline-flex;align-items:center;gap:2px;font-size:11px;padding:1px 6px;background:var(--accent-light);color:var(--accent-dark);border-radius:10px;white-space:nowrap">${escapeHtml(t)}<span onclick="event.stopPropagation();removeTag(${id},'${escapeHtml(t)}');applyFilters();" style="cursor:pointer;font-size:13px;line-height:1;margin-left:2px" title="Remove tag">×</span></span>`
+  ).join(' ') + ' ' + suppressBtn;
 }
 function addTag(id, tag) {
   tag = tag.trim();
@@ -392,7 +405,7 @@ cards.innerHTML = `
   <div class="card">
     <div class="card-label">Sources Processed</div>
     <div class="card-value">${DATA.sources ? DATA.sources.length : 0}</div>
-    <div class="card-sub">${DATA.sources && DATA.sources.length > 0 ? escapeHtml(DATA.sources[0].split('/').pop()) : 'None'}</div>
+    <div class="card-sub">${DATA.has_timestamps ? '⏱ Timestamps: detected' : 'Timestamps: none'}</div>
   </div>
 `;
 
@@ -418,65 +431,126 @@ function renderTimeline() {
     toggle.textContent = collapsed ? '▶ Expand' : '▼ Collapse';
   };
 
-  // Collect all source files and top 10 patterns
-  const sources = new Set();
-  DATA.patterns.forEach(p => { if (p.trend) p.trend.forEach(t => sources.add(t.source)); });
-  const srcList = [...sources].sort();
-  if (srcList.length < 2) return;
+  const isTimeBased = DATA.has_timestamps && DATA.patterns.some(p => p.trend && p.trend.length > 0 && p.trend[0].bucket);
 
-  const topN = DATA.patterns.slice(0, 10);
-  const colors = ['#4f6ef7','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1'];
-  const W = Math.min(900, srcList.length * 80 + 100), H = 260;
-  const margin = {top:20,right:20,bottom:60,left:70};
-  const cw = W - margin.left - margin.right;
-  const ch = H - margin.top - margin.bottom;
-  const barW = Math.max(12, Math.min(40, cw / srcList.length - 4));
+  if (isTimeBased) {
+    // Time-series chart: X-axis = time buckets, stacked bars for top patterns
+    const buckets = new Set();
+    DATA.patterns.forEach(p => { if (p.trend) p.trend.forEach(t => { if (t.bucket) buckets.add(t.bucket); }); });
+    const bucketList = [...buckets].sort();
+    if (bucketList.length < 2) return;
 
-  // Build stacked data
-  const maxStack = srcList.map((src, si) => {
-    let total = 0;
-    topN.forEach(p => {
-      const t = (p.trend||[]).find(t => t.source === src);
-      total += t ? t.count : 0;
+    const topN = DATA.patterns.slice(0, 10);
+    const colors = ['#4f6ef7','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1'];
+    const W = Math.min(900, bucketList.length * 60 + 100), H = 260;
+    const margin = {top:20,right:20,bottom:70,left:70};
+    const cw = W - margin.left - margin.right;
+    const ch = H - margin.top - margin.bottom;
+    const barW = Math.max(8, Math.min(36, cw / bucketList.length - 4));
+
+    const maxStack = bucketList.map(b => {
+      let total = 0;
+      topN.forEach(p => {
+        const t = (p.trend||[]).find(t => t.bucket === b);
+        total += t ? t.count : 0;
+      });
+      return total;
     });
-    return total;
-  });
-  const maxVal = Math.max(...maxStack, 1);
+    const maxVal = Math.max(...maxStack, 1);
 
-  let svg = `<svg width="${W}" height="${H}" style="display:block;max-width:100%">`;
-  // Y axis
-  for (let i = 0; i <= 4; i++) {
-    const y = margin.top + ch - (i/4)*ch;
-    const val = Math.round(maxVal * i/4);
-    svg += `<line x1="${margin.left}" y1="${y}" x2="${W-margin.right}" y2="${y}" stroke="#e2e5ea" stroke-width="0.5"/>`;
-    svg += `<text x="${margin.left-8}" y="${y+4}" text-anchor="end" font-size="11" fill="#5f6672">${formatNumber(val)}</text>`;
+    let svg = `<svg width="${W}" height="${H}" style="display:block;max-width:100%">`;
+    for (let i = 0; i <= 4; i++) {
+      const y = margin.top + ch - (i/4)*ch;
+      const val = Math.round(maxVal * i/4);
+      svg += `<line x1="${margin.left}" y1="${y}" x2="${W-margin.right}" y2="${y}" stroke="#e2e5ea" stroke-width="0.5"/>`;
+      svg += `<text x="${margin.left-8}" y="${y+4}" text-anchor="end" font-size="11" fill="#5f6672">${formatNumber(val)}</text>`;
+    }
+
+    bucketList.forEach((b, bi) => {
+      const x = margin.left + bi * (cw / bucketList.length) + (cw / bucketList.length - barW) / 2;
+      let cumY = 0;
+      topN.forEach((p, pi) => {
+        const t = (p.trend||[]).find(t => t.bucket === b);
+        const val = t ? t.count : 0;
+        if (val === 0) return;
+        const barH = (val / maxVal) * ch;
+        const y = margin.top + ch - cumY - barH;
+        svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${colors[pi % colors.length]}" opacity="0.85" rx="2">`;
+        svg += `<title>${escapeHtml(truncate(p.template,60))}\n${b}: ${formatNumber(val)}</title></rect>`;
+        cumY += barH;
+      });
+      const lx = x + barW/2;
+      const shortB = b.length > 16 ? b.substring(0,14)+'…' : b;
+      svg += `<text x="${lx}" y="${H-margin.bottom+16}" text-anchor="middle" font-size="10" fill="#5f6672" transform="rotate(-40,${lx},${H-margin.bottom+16})">${escapeHtml(shortB)}</text>`;
+    });
+    svg += '</svg>';
+    wrap.innerHTML = svg;
+
+    legend.innerHTML = topN.map((p, i) =>
+      `<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:2px;background:${colors[i%colors.length]};display:inline-block"></span>${escapeHtml(truncate(p.template,50))}</span>`
+    ).join('');
+  } else {
+    // Per-source chart (original behavior): use distribution if available, else trend
+    const sources = new Set();
+    DATA.patterns.forEach(p => {
+      const d = p.distribution || p.trend || [];
+      d.forEach(t => { if (t.source) sources.add(t.source); });
+    });
+    const srcList = [...sources].sort();
+    if (srcList.length < 2) return;
+
+    const topN = DATA.patterns.slice(0, 10);
+    const colors = ['#4f6ef7','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1'];
+    const W = Math.min(900, srcList.length * 80 + 100), H = 260;
+    const margin = {top:20,right:20,bottom:60,left:70};
+    const cw = W - margin.left - margin.right;
+    const ch = H - margin.top - margin.bottom;
+    const barW = Math.max(12, Math.min(40, cw / srcList.length - 4));
+
+    const maxStack = srcList.map(src => {
+      let total = 0;
+      topN.forEach(p => {
+        const d = p.distribution || p.trend || [];
+        const t = d.find(t => t.source === src);
+        total += t ? t.count : 0;
+      });
+      return total;
+    });
+    const maxVal = Math.max(...maxStack, 1);
+
+    let svg = `<svg width="${W}" height="${H}" style="display:block;max-width:100%">`;
+    for (let i = 0; i <= 4; i++) {
+      const y = margin.top + ch - (i/4)*ch;
+      const val = Math.round(maxVal * i/4);
+      svg += `<line x1="${margin.left}" y1="${y}" x2="${W-margin.right}" y2="${y}" stroke="#e2e5ea" stroke-width="0.5"/>`;
+      svg += `<text x="${margin.left-8}" y="${y+4}" text-anchor="end" font-size="11" fill="#5f6672">${formatNumber(val)}</text>`;
+    }
+
+    srcList.forEach((src, si) => {
+      const x = margin.left + si * (cw / srcList.length) + (cw / srcList.length - barW) / 2;
+      let cumY = 0;
+      topN.forEach((p, pi) => {
+        const d = p.distribution || p.trend || [];
+        const t = d.find(t => t.source === src);
+        const val = t ? t.count : 0;
+        if (val === 0) return;
+        const barH = (val / maxVal) * ch;
+        const y = margin.top + ch - cumY - barH;
+        svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${colors[pi % colors.length]}" opacity="0.85" rx="2">`;
+        svg += `<title>${escapeHtml(truncate(p.template,60))}\n${src}: ${formatNumber(val)}</title></rect>`;
+        cumY += barH;
+      });
+      const lx = x + barW/2;
+      const shortSrc = src.length > 20 ? src.substring(0,18)+'…' : src;
+      svg += `<text x="${lx}" y="${H-margin.bottom+16}" text-anchor="middle" font-size="11" fill="#5f6672" transform="rotate(-30,${lx},${H-margin.bottom+16})">${escapeHtml(shortSrc)}</text>`;
+    });
+    svg += '</svg>';
+    wrap.innerHTML = svg;
+
+    legend.innerHTML = topN.map((p, i) =>
+      `<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:2px;background:${colors[i%colors.length]};display:inline-block"></span>${escapeHtml(truncate(p.template,50))}</span>`
+    ).join('');
   }
-
-  srcList.forEach((src, si) => {
-    const x = margin.left + si * (cw / srcList.length) + (cw / srcList.length - barW) / 2;
-    let cumY = 0;
-    topN.forEach((p, pi) => {
-      const t = (p.trend||[]).find(t => t.source === src);
-      const val = t ? t.count : 0;
-      if (val === 0) return;
-      const barH = (val / maxVal) * ch;
-      const y = margin.top + ch - cumY - barH;
-      svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${colors[pi % colors.length]}" opacity="0.85" rx="2">`;
-      svg += `<title>${escapeHtml(truncate(p.template,60))}\n${src}: ${formatNumber(val)}</title></rect>`;
-      cumY += barH;
-    });
-    // X label
-    const lx = x + barW/2;
-    const shortSrc = src.length > 20 ? src.substring(0,18)+'…' : src;
-    svg += `<text x="${lx}" y="${H-margin.bottom+16}" text-anchor="middle" font-size="11" fill="#5f6672" transform="rotate(-30,${lx},${H-margin.bottom+16})">${escapeHtml(shortSrc)}</text>`;
-  });
-  svg += '</svg>';
-  wrap.innerHTML = svg;
-
-  // Legend
-  legend.innerHTML = topN.map((p, i) =>
-    `<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:2px;background:${colors[i%colors.length]};display:inline-block"></span>${escapeHtml(truncate(p.template,50))}</span>`
-  ).join('');
 }
 renderTimeline();
 
@@ -496,11 +570,15 @@ function renderTable() {
 
   const maxC = filtered[0] ? Math.max(...filtered.map(p => p.count)) : 1;
   let html = '';
+  const showSuppressed = document.getElementById('showSuppressed').checked;
   filtered.forEach((p, i) => {
     const pct = DATA.total_occurrences > 0 ? (p.count / DATA.total_occurrences * 100) : 0;
     const barW = maxC > 0 ? (p.count / maxC * 100) : 0;
     const rid = `row-${p.id}`;
-    html += `<tr class="data-row" data-id="${p.id}" onclick="toggleDetail(${p.id})">
+    const ptags = getTagsForPattern(p.id);
+    const isSuppressed = ptags.includes('suppress') || ptags.includes('ignore') || p.suppressed;
+    const suppressedClass = isSuppressed ? ' suppressed' + (showSuppressed ? ' show-suppressed' : '') : '';
+    html += `<tr class="data-row${suppressedClass}" data-id="${p.id}" onclick="toggleDetail(${p.id})">
       <td class="rank-cell"><span class="expand-icon">›</span> ${i + 1}</td>
       <td class="group-cell" title="${escapeHtml(p.group || '')}">${escapeHtml(p.group || '—')}</td>
       <td class="template-cell" title="${escapeHtml(p.template.split('\\n')[0])}">${highlightWildcards(truncate(p.template, 120))}</td>
@@ -596,6 +674,7 @@ function applyFilters() {
   const q = searchInput.value.toLowerCase().trim();
   const groupVal = groupFilterSelect.value;
   const tagVal = tagFilterSelect.value;
+  const showSuppressed = document.getElementById('showSuppressed').checked;
   let result = [...DATA.patterns];
   if (q) {
     result = result.filter(p => p.template.toLowerCase().includes(q));
@@ -609,6 +688,12 @@ function applyFilters() {
     result = result.filter(p => getTagsForPattern(p.id).length === 0);
   } else if (tagVal) {
     result = result.filter(p => getTagsForPattern(p.id).includes(tagVal));
+  }
+  if (!showSuppressed) {
+    result = result.filter(p => {
+      const tags = getTagsForPattern(p.id);
+      return !tags.includes('suppress') && !tags.includes('ignore') && !p.suppressed;
+    });
   }
   filtered = sortPatterns(result);
   renderTable();

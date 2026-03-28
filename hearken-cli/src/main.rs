@@ -59,6 +59,12 @@ enum Commands {
         /// Path to tags JSON file for pattern tagging (created if absent)
         #[arg(long)]
         tags_file: Option<String>,
+        /// Include suppressed patterns in output (default: excluded)
+        #[arg(long)]
+        include_suppressed: bool,
+        /// Time bucket for trends: hour, day, or auto (auto-detect)
+        #[arg(long, default_value = "auto")]
+        bucket: String,
     },
     /// Export patterns as JSON or CSV
     Export {
@@ -80,6 +86,15 @@ enum Commands {
         /// Only include patterns from these file groups (comma-separated)
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
+        /// Path to tags JSON file for pattern suppression
+        #[arg(long)]
+        tags_file: Option<String>,
+        /// Include suppressed patterns in output (default: excluded)
+        #[arg(long)]
+        include_suppressed: bool,
+        /// Time bucket for trends: hour, day, or auto (auto-detect)
+        #[arg(long, default_value = "auto")]
+        bucket: String,
     },
     /// Compare two databases to find new, resolved, and changed patterns
     Diff {
@@ -114,6 +129,12 @@ enum Commands {
         /// Output format (text or json)
         #[arg(long, default_value = "text")]
         format: String,
+        /// Path to tags JSON file for pattern suppression
+        #[arg(long)]
+        tags_file: Option<String>,
+        /// Include suppressed patterns
+        #[arg(long)]
+        include_suppressed: bool,
     },
 }
 
@@ -141,11 +162,11 @@ fn main() -> Result<()> {
         Commands::Stats {} => {
             show_stats(&storage, &cli.database)?;
         }
-        Commands::Report { output, samples, top, filter, group, tags_file } => {
-            generate_report(&storage, &output, samples, top, filter, group, tags_file)?;
+        Commands::Report { output, samples, top, filter, group, tags_file, include_suppressed, bucket } => {
+            generate_report(&storage, &output, samples, top, filter, group, tags_file, include_suppressed, &bucket)?;
         }
-        Commands::Export { format, output, samples, top, filter, group } => {
-            export_patterns(&storage, &format, output.as_deref(), samples, top, filter, group)?;
+        Commands::Export { format, output, samples, top, filter, group, tags_file, include_suppressed, bucket } => {
+            export_patterns(&storage, &format, output.as_deref(), samples, top, filter, group, tags_file.as_deref(), include_suppressed, &bucket)?;
         }
         Commands::Diff { before, after, format } => {
             drop(storage);
@@ -157,8 +178,8 @@ fn main() -> Result<()> {
             }
             find_duplicates(&storage, threshold, group.as_deref(), &format)?;
         }
-        Commands::Anomalies { group, top, format } => {
-            detect_anomalies(&storage, group.as_deref(), top, &format)?;
+        Commands::Anomalies { group, top, format, tags_file, include_suppressed } => {
+            detect_anomalies(&storage, group.as_deref(), top, &format, tags_file.as_deref(), include_suppressed)?;
         }
     }
 
@@ -739,7 +760,32 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: usize, top_n: usize, filter: Option<Vec<String>>, group_filter: Option<Vec<String>>, tags_file: Option<String>) -> Result<()> {
+fn load_suppressed_ids(tags_file: Option<&str>) -> HashSet<i64> {
+    let mut suppressed = HashSet::new();
+    if let Some(tf) = tags_file {
+        if let Ok(content) = std::fs::read_to_string(tf) {
+            if let Ok(tags) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(obj) = tags.as_object() {
+                    for (id_str, tag_list) in obj {
+                        if let Some(arr) = tag_list.as_array() {
+                            let has_suppress = arr.iter().any(|t| {
+                                t.as_str().map(|s| s == "suppress" || s == "ignore").unwrap_or(false)
+                            });
+                            if has_suppress {
+                                if let Ok(id) = id_str.parse::<i64>() {
+                                    suppressed.insert(id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    suppressed
+}
+
+fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: usize, top_n: usize, filter: Option<Vec<String>>, group_filter: Option<Vec<String>>, tags_file: Option<String>, include_suppressed: bool, bucket: &str) -> Result<()> {
     let start = Instant::now();
     println!("Generating report...");
 
@@ -764,7 +810,15 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
 
     // Fetch trend data (per-source counts) for all patterns
     let pattern_ids: Vec<i64> = patterns.iter().map(|(id, _, _, _)| *id).collect();
-    let trends = storage.get_pattern_trends(&pattern_ids).unwrap_or_default();
+    let distribution = storage.get_pattern_trends(&pattern_ids).unwrap_or_default();
+
+    // Check for timestamps and fetch time-series data if available
+    let has_timestamps = storage.has_timestamps().unwrap_or(false);
+    let time_series = if has_timestamps {
+        storage.get_pattern_time_series(&pattern_ids, bucket).unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
 
     let mut pattern_data = Vec::with_capacity(patterns.len());
     for (id, template, count, group_name) in &patterns {
@@ -777,9 +831,18 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
                     .and_then(|f| f.to_str()).unwrap_or(source_path),
             })
         }).collect();
-        let trend = trends.get(id).map(|t| {
+        let dist = distribution.get(id).map(|t| {
             t.iter().map(|(name, cnt)| serde_json::json!({"source": name, "count": cnt})).collect::<Vec<_>>()
         }).unwrap_or_default();
+
+        let trend = if has_timestamps {
+            time_series.get(id).map(|t| {
+                t.iter().map(|(b, cnt)| serde_json::json!({"bucket": b, "count": cnt})).collect::<Vec<_>>()
+            }).unwrap_or_default()
+        } else {
+            dist.clone()
+        };
+
         pattern_data.push(serde_json::json!({
             "id": id,
             "template": template,
@@ -787,7 +850,25 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
             "group": group_name,
             "samples": samples,
             "trend": trend,
+            "distribution": dist,
         }));
+    }
+
+    // Mark suppressed patterns and optionally filter them out
+    let suppressed_ids = load_suppressed_ids(tags_file.as_deref());
+    if !suppressed_ids.is_empty() {
+        for p in pattern_data.iter_mut() {
+            if let Some(id) = p.get("id").and_then(|v| v.as_i64()) {
+                if suppressed_ids.contains(&id) {
+                    p.as_object_mut().unwrap().insert("suppressed".to_string(), serde_json::json!(true));
+                }
+            }
+        }
+        if !include_suppressed {
+            pattern_data.retain(|p| {
+                !p.get("suppressed").and_then(|v| v.as_bool()).unwrap_or(false)
+            });
+        }
     }
 
     let now: String = {
@@ -816,6 +897,7 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
     let report_json = serde_json::json!({
         "pattern_count": pattern_count,
         "total_occurrences": total_occurrences,
+        "has_timestamps": has_timestamps,
         "sources": sources,
         "file_groups": file_groups.iter().map(|(name, count)| {
             serde_json::json!({"name": name, "pattern_count": count})
@@ -895,6 +977,9 @@ fn export_patterns(
     top_n: usize,
     filter: Option<Vec<String>>,
     group_filter: Option<Vec<String>>,
+    tags_file: Option<&str>,
+    include_suppressed: bool,
+    _bucket: &str,
 ) -> Result<()> {
     if format != "json" && format != "csv" {
         bail!("--format must be 'json' or 'csv', got '{}'", format);
@@ -902,6 +987,14 @@ fn export_patterns(
 
     let patterns = storage.get_all_patterns_ranked(top_n, filter.as_deref(), group_filter.as_deref())
         .context("Failed to query patterns")?;
+
+    // Filter out suppressed patterns unless include_suppressed is set
+    let suppressed_ids = load_suppressed_ids(tags_file);
+    let patterns: Vec<_> = if !include_suppressed && !suppressed_ids.is_empty() {
+        patterns.into_iter().filter(|(id, _, _, _)| !suppressed_ids.contains(id)).collect()
+    } else {
+        patterns
+    };
 
     let content = if format == "json" {
         let mut pattern_data = Vec::with_capacity(patterns.len());
@@ -1219,10 +1312,25 @@ fn detect_anomalies(
     group_filter: Option<&str>,
     top: usize,
     format: &str,
+    tags_file: Option<&str>,
+    include_suppressed: bool,
 ) -> Result<()> {
     let patterns = storage.get_patterns_for_dedup(group_filter)?;
     if patterns.is_empty() {
         println!("No patterns found in database.");
+        return Ok(());
+    }
+
+    // Filter out suppressed patterns unless include_suppressed is set
+    let suppressed_ids = load_suppressed_ids(tags_file);
+    let patterns: Vec<_> = if !include_suppressed && !suppressed_ids.is_empty() {
+        patterns.into_iter().filter(|p| !suppressed_ids.contains(&p.0)).collect()
+    } else {
+        patterns
+    };
+
+    if patterns.is_empty() {
+        println!("No patterns found after suppression filtering.");
         return Ok(());
     }
 

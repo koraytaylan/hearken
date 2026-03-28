@@ -330,3 +330,89 @@ fn test_full_pipeline_multi_group() {
     assert!(html.contains("error.log"), "Report should contain error.log group");
     assert!(html.contains("const DATA"), "Report should have embedded data");
 }
+
+#[test]
+fn test_report_with_bucket_hour() {
+    let dir = TempDir::new().unwrap();
+    let log_file = dir.path().join("app.log");
+    let db_file = dir.path().join("test.db");
+    let report_file = dir.path().join("bucket_report.html");
+
+    fs::write(&log_file, generate_log_lines(100, "BucketApp")).unwrap();
+
+    // Process
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process", log_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Process failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    // Generate report with --bucket hour
+    let output = Command::new(cli_bin())
+        .args([
+            "-d", db_file.to_str().unwrap(),
+            "report",
+            "--output", report_file.to_str().unwrap(),
+            "--top", "50",
+            "--samples", "3",
+            "--bucket", "hour",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Report with --bucket hour failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(report_file.exists(), "Report HTML should be created");
+
+    let html = fs::read_to_string(&report_file).unwrap();
+    assert!(html.contains("<!DOCTYPE html>"), "Report should be valid HTML");
+    assert!(html.contains("const DATA"), "Report should embed data JSON");
+    assert!(html.contains("has_timestamps"), "Report should include has_timestamps field");
+}
+
+#[test]
+fn test_pattern_suppression() {
+    let dir = TempDir::new().unwrap();
+    let log_file = dir.path().join("app.log");
+    let db_file = dir.path().join("test.db");
+    let tags_file = dir.path().join("tags.json");
+
+    fs::write(&log_file, generate_log_lines(100, "SuppressApp")).unwrap();
+
+    // Process
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process", log_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Process failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    // Create tags file suppressing pattern ID 1
+    fs::write(&tags_file, r#"{"1": ["suppress"]}"#).unwrap();
+
+    // Export without include-suppressed — should exclude pattern 1
+    let output = Command::new(cli_bin())
+        .args([
+            "-d", db_file.to_str().unwrap(),
+            "export",
+            "--format", "json",
+            "--tags-file", tags_file.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Export failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Pattern 1 should NOT appear
+    assert!(!stdout.contains("\"id\":1,") && !stdout.contains("\"id\": 1,"),
+        "Suppressed pattern should be excluded: {}", &stdout[..stdout.len().min(500)]);
+
+    // Export WITH include-suppressed — should include pattern 1
+    let output = Command::new(cli_bin())
+        .args([
+            "-d", db_file.to_str().unwrap(),
+            "export",
+            "--format", "json",
+            "--tags-file", tags_file.to_str().unwrap(),
+            "--include-suppressed",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Export with --include-suppressed failed: {}", String::from_utf8_lossy(&output.stderr));
+}
