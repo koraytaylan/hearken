@@ -136,6 +136,30 @@ enum Commands {
         #[arg(long)]
         include_suppressed: bool,
     },
+    /// Run CI/CD quality gate checks on processed logs
+    Check {
+        /// Maximum anomaly score before failing
+        #[arg(long)]
+        max_anomaly_score: Option<f64>,
+        /// Maximum number of new patterns vs baseline before failing
+        #[arg(long)]
+        max_new_patterns: Option<usize>,
+        /// Fail if any pattern contains this substring
+        #[arg(long)]
+        fail_on_pattern: Option<Vec<String>>,
+        /// Path to baseline database for comparison
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Path to tags JSON file for pattern suppression
+        #[arg(long)]
+        tags_file: Option<String>,
+        /// Only check patterns from this file group
+        #[arg(long)]
+        group: Option<String>,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -180,6 +204,12 @@ fn main() -> Result<()> {
         }
         Commands::Anomalies { group, top, format, tags_file, include_suppressed } => {
             detect_anomalies(&storage, group.as_deref(), top, &format, tags_file.as_deref(), include_suppressed)?;
+        }
+        Commands::Check { max_anomaly_score, max_new_patterns, fail_on_pattern, baseline, tags_file, group, format } => {
+            let passed = run_check(&storage, max_anomaly_score, max_new_patterns, fail_on_pattern, baseline, tags_file.as_deref(), group.as_deref(), &format)?;
+            if !passed {
+                std::process::exit(1);
+            }
         }
     }
 
@@ -1057,18 +1087,18 @@ fn export_patterns(
     Ok(())
 }
 
-fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<()> {
-    if format != "text" && format != "json" {
-        bail!("--format must be 'text' or 'json', got '{}'", format);
-    }
+struct DiffResult {
+    new_patterns: Vec<(String, String, i64)>,
+    resolved_patterns: Vec<(String, String, i64)>,
+    changed_patterns: Vec<(String, String, i64, i64)>,
+}
 
-    // Open the "after" database and attach the "before" database
+fn compute_diff(before_path: &str, after_path: &str) -> Result<DiffResult> {
     let conn = rusqlite::Connection::open(after_path)
         .with_context(|| format!("Failed to open 'after' database: {}", after_path))?;
     conn.execute("ATTACH DATABASE ? AS before_db", rusqlite::params![before_path])
         .with_context(|| format!("Failed to attach 'before' database: {}", before_path))?;
 
-    // New patterns: in after but not in before (matched by group name + template)
     let mut new_patterns: Vec<(String, String, i64)> = Vec::new();
     {
         let mut stmt = conn.prepare(
@@ -1089,7 +1119,6 @@ fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<(
         for row in rows { new_patterns.push(row?); }
     }
 
-    // Resolved patterns: in before but not in after
     let mut resolved_patterns: Vec<(String, String, i64)> = Vec::new();
     {
         let mut stmt = conn.prepare(
@@ -1110,7 +1139,6 @@ fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<(
         for row in rows { resolved_patterns.push(row?); }
     }
 
-    // Changed patterns: exist in both, count changed significantly (>2x or <0.5x)
     let mut changed_patterns: Vec<(String, String, i64, i64)> = Vec::new();
     {
         let mut stmt = conn.prepare(
@@ -1130,6 +1158,17 @@ fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<(
     }
 
     conn.execute("DETACH DATABASE before_db", [])?;
+
+    Ok(DiffResult { new_patterns, resolved_patterns, changed_patterns })
+}
+
+fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<()> {
+    if format != "text" && format != "json" {
+        bail!("--format must be 'text' or 'json', got '{}'", format);
+    }
+
+    let diff = compute_diff(before_path, after_path)?;
+    let DiffResult { new_patterns, resolved_patterns, changed_patterns } = &diff;
 
     if format == "json" {
         let output = serde_json::json!({
@@ -1162,7 +1201,7 @@ fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<(
             println!("✅ New patterns: none");
         } else {
             println!("🆕 New patterns: {}", new_patterns.len());
-            for (group, template, count) in &new_patterns {
+            for (group, template, count) in new_patterns {
                 println!("  [{:<20}] {:>8}x  {}", group, count, truncate_template(template, 100));
             }
         }
@@ -1172,7 +1211,7 @@ fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<(
             println!("✅ Resolved patterns: none");
         } else {
             println!("🗑️  Resolved patterns: {}", resolved_patterns.len());
-            for (group, template, count) in &resolved_patterns {
+            for (group, template, count) in resolved_patterns {
                 println!("  [{:<20}] {:>8}x  {}", group, count, truncate_template(template, 100));
             }
         }
@@ -1182,7 +1221,7 @@ fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<(
             println!("✅ Changed patterns (>2x): none");
         } else {
             println!("📈 Changed patterns (>2x): {}", changed_patterns.len());
-            for (group, template, before, after) in &changed_patterns {
+            for (group, template, before, after) in changed_patterns {
                 let pct = (*after as f64 / *before as f64 - 1.0) * 100.0;
                 let arrow = if pct > 0.0 { "↑" } else { "↓" };
                 println!("  [{:<20}] {} → {} ({}{:.0}%)  {}", group, before, after, arrow, pct.abs(), truncate_template(template, 80));
@@ -1307,52 +1346,151 @@ fn find_duplicates(
     Ok(())
 }
 
-fn detect_anomalies(
+fn run_check(
+    storage: &Storage,
+    max_anomaly_score: Option<f64>,
+    max_new_patterns: Option<usize>,
+    fail_on_pattern: Option<Vec<String>>,
+    baseline: Option<String>,
+    tags_file: Option<&str>,
+    group_filter: Option<&str>,
+    format: &str,
+) -> Result<bool> {
+    let suppressed = load_suppressed_ids(tags_file);
+    let mut checks: Vec<serde_json::Value> = Vec::new();
+    let mut all_passed = true;
+
+    // Check 1: Anomaly score
+    if let Some(max_score) = max_anomaly_score {
+        let anomalies = compute_anomalies(storage, group_filter, 1, &suppressed)?;
+        let top_score = anomalies.first().map(|a| a.score).unwrap_or(0.0);
+        let passed = top_score <= max_score;
+        if !passed { all_passed = false; }
+        checks.push(serde_json::json!({
+            "name": "max_anomaly_score",
+            "threshold": max_score,
+            "actual": top_score,
+            "passed": passed,
+        }));
+    }
+
+    // Check 2: New patterns vs baseline
+    if let Some(max_new) = max_new_patterns {
+        if let Some(ref baseline_path) = baseline {
+            let diff = compute_diff(baseline_path, storage.db_path())?;
+            let actual = diff.new_patterns.len();
+            let passed = actual <= max_new;
+            if !passed { all_passed = false; }
+            checks.push(serde_json::json!({
+                "name": "max_new_patterns",
+                "threshold": max_new,
+                "actual": actual,
+                "passed": passed,
+            }));
+        } else {
+            checks.push(serde_json::json!({
+                "name": "max_new_patterns",
+                "threshold": max_new,
+                "actual": null,
+                "passed": true,
+                "note": "no baseline provided, skipped",
+            }));
+        }
+    }
+
+    // Check 3: Fail on pattern substring
+    if let Some(ref patterns) = fail_on_pattern {
+        let all_patterns = storage.get_patterns_for_dedup(group_filter)?;
+        for needle in patterns {
+            let found = all_patterns.iter()
+                .filter(|(id, _, _, _)| !suppressed.contains(id))
+                .any(|(_, tmpl, _, _)| tmpl.contains(needle.as_str()));
+            if found { all_passed = false; }
+            checks.push(serde_json::json!({
+                "name": "fail_on_pattern",
+                "pattern": needle,
+                "found": found,
+                "passed": !found,
+            }));
+        }
+    }
+
+    // Output results
+    if format == "json" {
+        let output = serde_json::json!({
+            "passed": all_passed,
+            "checks": checks,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("═══ Hearken Check ═══\n");
+        for check in &checks {
+            let name = check["name"].as_str().unwrap_or("unknown");
+            let passed = check["passed"].as_bool().unwrap_or(false);
+            let icon = if passed { "✅" } else { "❌" };
+            match name {
+                "max_anomaly_score" => {
+                    println!("  {} anomaly_score: {:.1} (threshold: {})",
+                        icon, check["actual"].as_f64().unwrap_or(0.0), check["threshold"]);
+                }
+                "max_new_patterns" => {
+                    println!("  {} new_patterns: {} (threshold: {})",
+                        icon, check["actual"], check["threshold"]);
+                }
+                "fail_on_pattern" => {
+                    println!("  {} pattern '{}': {}",
+                        icon, check["pattern"].as_str().unwrap_or(""),
+                        if check["found"].as_bool().unwrap_or(false) { "FOUND" } else { "not found" });
+                }
+                _ => {}
+            }
+        }
+        println!("\n{}", if all_passed { "✅ All checks passed" } else { "❌ Some checks failed" });
+    }
+
+    Ok(all_passed)
+}
+
+struct AnomalyResult {
+    id: i64,
+    template: String,
+    count: i64,
+    group: String,
+    score: f64,
+    reasons: Vec<String>,
+}
+
+fn compute_anomalies(
     storage: &Storage,
     group_filter: Option<&str>,
     top: usize,
-    format: &str,
-    tags_file: Option<&str>,
-    include_suppressed: bool,
-) -> Result<()> {
+    suppressed_ids: &HashSet<i64>,
+) -> Result<Vec<AnomalyResult>> {
     let patterns = storage.get_patterns_for_dedup(group_filter)?;
     if patterns.is_empty() {
-        println!("No patterns found in database.");
-        return Ok(());
+        return Ok(Vec::new());
     }
 
-    // Filter out suppressed patterns unless include_suppressed is set
-    let suppressed_ids = load_suppressed_ids(tags_file);
-    let patterns: Vec<_> = if !include_suppressed && !suppressed_ids.is_empty() {
+    let patterns: Vec<_> = if !suppressed_ids.is_empty() {
         patterns.into_iter().filter(|p| !suppressed_ids.contains(&p.0)).collect()
     } else {
         patterns
     };
 
     if patterns.is_empty() {
-        println!("No patterns found after suppression filtering.");
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let pattern_ids: Vec<i64> = patterns.iter().map(|p| p.0).collect();
     let trends = storage.get_pattern_trends(&pattern_ids)?;
     let source_counts = storage.get_source_counts_per_group()?;
 
-    struct Anomaly {
-        id: i64,
-        template: String,
-        count: i64,
-        group: String,
-        score: f64,
-        reasons: Vec<String>,
-    }
-
     // Compute per-group stats for z-score
-    let mut group_counts: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new(); // group -> [(id, count)]
+    let mut group_counts: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
     for (id, _, count, group) in &patterns {
         group_counts.entry(group.clone()).or_default().push((*id, *count));
     }
-    let mut group_stats: HashMap<String, (f64, f64)> = HashMap::new(); // group -> (mean, stddev)
+    let mut group_stats: HashMap<String, (f64, f64)> = HashMap::new();
     for (group, counts) in &group_counts {
         let n = counts.len() as f64;
         let mean = counts.iter().map(|(_, c)| *c as f64).sum::<f64>() / n;
@@ -1360,13 +1498,12 @@ fn detect_anomalies(
         group_stats.insert(group.clone(), (mean, variance.sqrt()));
     }
 
-    let mut anomalies: Vec<Anomaly> = Vec::new();
+    let mut anomalies: Vec<AnomalyResult> = Vec::new();
 
     for (id, template, count, group) in &patterns {
         let mut reasons = Vec::new();
         let mut score = 0.0f64;
 
-        // Check single-source anomaly (pattern appears in only 1 source when group has >1)
         let group_sources = source_counts.get(group).copied().unwrap_or(1);
         let pattern_sources = trends.get(id).map(|t| t.len()).unwrap_or(1);
         if group_sources > 1 && pattern_sources == 1 {
@@ -1374,7 +1511,6 @@ fn detect_anomalies(
             score += 2.0;
         }
 
-        // Check z-score outlier
         if let Some(&(mean, stddev)) = group_stats.get(group) {
             if stddev > 0.0 {
                 let z = (*count as f64 - mean) / stddev;
@@ -1386,7 +1522,7 @@ fn detect_anomalies(
         }
 
         if !reasons.is_empty() {
-            anomalies.push(Anomaly {
+            anomalies.push(AnomalyResult {
                 id: *id,
                 template: template.clone(),
                 count: *count,
@@ -1399,6 +1535,20 @@ fn detect_anomalies(
 
     anomalies.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     anomalies.truncate(top);
+
+    Ok(anomalies)
+}
+
+fn detect_anomalies(
+    storage: &Storage,
+    group_filter: Option<&str>,
+    top: usize,
+    format: &str,
+    tags_file: Option<&str>,
+    include_suppressed: bool,
+) -> Result<()> {
+    let suppressed = if include_suppressed { HashSet::new() } else { load_suppressed_ids(tags_file) };
+    let anomalies = compute_anomalies(storage, group_filter, top, &suppressed)?;
 
     if anomalies.is_empty() {
         println!("No anomalous patterns detected.");

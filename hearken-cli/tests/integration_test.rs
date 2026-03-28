@@ -416,3 +416,56 @@ fn test_pattern_suppression() {
         .unwrap();
     assert!(output.status.success(), "Export with --include-suppressed failed: {}", String::from_utf8_lossy(&output.stderr));
 }
+
+#[test]
+fn test_check_command_pass() {
+    let dir = TempDir::new().unwrap();
+    let log_file = dir.path().join("app.log");
+    let db_file = dir.path().join("test.db");
+
+    fs::write(&log_file, generate_log_lines(50, "CheckApp")).unwrap();
+
+    // Process
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process", log_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // Check with generous threshold — should pass
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "check", "--max-anomaly-score", "999"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Check should pass with high threshold");
+
+    // Check with fail-on-pattern for something that doesn't exist
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "check", "--fail-on-pattern", "NONEXISTENT_PATTERN_XYZ"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Check should pass when pattern not found");
+}
+
+#[test]
+fn test_check_command_fail() {
+    let dir = TempDir::new().unwrap();
+    let log_file = dir.path().join("app.log");
+    let db_file = dir.path().join("test.db");
+
+    fs::write(&log_file, generate_log_lines(50, "CheckFail")).unwrap();
+
+    // Process
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "process", log_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // Check with fail-on-pattern for "Operation" which should exist
+    let output = Command::new(cli_bin())
+        .args(["-d", db_file.to_str().unwrap(), "check", "--fail-on-pattern", "Operation"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "Check should fail when pattern found");
+}
