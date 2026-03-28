@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use hearken_core::{LogReader, LogTemplate, tokenize};
 use hearken_ml::LogParser;
@@ -65,8 +65,15 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Process { files, threshold, batch_size } => {
+            if !(0.0..=1.0).contains(&threshold) {
+                bail!("--threshold must be between 0.0 and 1.0, got {}", threshold);
+            }
+            let valid_files = validate_files(&files);
+            if valid_files.is_empty() {
+                bail!("No valid files to process. All provided paths were invalid or empty.");
+            }
             let mut storage = storage;
-            process_files(&mut storage, &files, threshold, batch_size)?;
+            process_files(&mut storage, &valid_files, threshold, batch_size)?;
         }
         Commands::Search { query } => {
             search_patterns(&storage, &query)?;
@@ -199,6 +206,37 @@ fn group_entries<'a>(lines: &[(u64, &'a str, u64)], entry_fps: &HashSet<String>)
         next_pos: cur_next,
     });
     entries
+}
+
+/// Validates file paths: checks existence, readability, and non-emptiness.
+/// Returns only the valid paths, printing warnings for skipped files.
+fn validate_files(files: &[String]) -> Vec<String> {
+    let mut valid = Vec::with_capacity(files.len());
+    for file_path in files {
+        let path = Path::new(file_path);
+        if !path.exists() {
+            eprintln!("Warning: skipping '{}' — file does not exist", file_path);
+            continue;
+        }
+        match std::fs::metadata(path) {
+            Ok(meta) => {
+                if !meta.is_file() {
+                    eprintln!("Warning: skipping '{}' — not a regular file", file_path);
+                    continue;
+                }
+                if meta.len() == 0 {
+                    eprintln!("Warning: skipping '{}' — file is empty", file_path);
+                    continue;
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: skipping '{}' — cannot read metadata: {}", file_path, e);
+                continue;
+            }
+        }
+        valid.push(file_path.clone());
+    }
+    valid
 }
 
 fn process_files(storage: &mut Storage, file_paths: &[String], threshold: f64, batch_size: usize) -> Result<()> {
