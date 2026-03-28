@@ -57,6 +57,27 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
     },
+    /// Export patterns as JSON or CSV
+    Export {
+        /// Output format
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Output file path (defaults to stdout if not specified)
+        #[arg(long)]
+        output: Option<String>,
+        /// Number of sample occurrences per pattern
+        #[arg(long, default_value_t = 5)]
+        samples: usize,
+        /// Maximum number of patterns to include (by occurrence count)
+        #[arg(long, default_value_t = 500)]
+        top: usize,
+        /// Only include patterns containing ANY of these substrings (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        filter: Option<Vec<String>>,
+        /// Only include patterns from these file groups (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -85,6 +106,9 @@ fn main() -> Result<()> {
         }
         Commands::Report { output, samples, top, filter, group } => {
             generate_report(&storage, &output, samples, top, filter, group)?;
+        }
+        Commands::Export { format, output, samples, top, filter, group } => {
+            export_patterns(&storage, &format, output.as_deref(), samples, top, filter, group)?;
         }
     }
 
@@ -634,29 +658,8 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
         let raw_samples = storage.get_pattern_samples(*id, samples_per_pattern)
             .unwrap_or_default();
         let samples: Vec<serde_json::Value> = raw_samples.iter().map(|(vars, source_path)| {
-            let mut var_iter = vars.split('\t');
-            let mut rebuilt = String::with_capacity(template.len() + vars.len());
-            let mut chars = template.chars().peekable();
-            while let Some(c) = chars.next() {
-                if c == '<' && chars.peek() == Some(&'*') {
-                    chars.next(); // consume '*'
-                    if chars.peek() == Some(&'>') {
-                        chars.next(); // consume '>'
-                        if let Some(val) = var_iter.next() {
-                            rebuilt.push_str(val);
-                        } else {
-                            rebuilt.push_str("<*>");
-                        }
-                        continue;
-                    }
-                    rebuilt.push('<');
-                    rebuilt.push('*');
-                } else {
-                    rebuilt.push(c);
-                }
-            }
             serde_json::json!({
-                "text": rebuilt,
+                "text": reconstruct_entry(template, vars),
                 "source": Path::new(source_path).file_name()
                     .and_then(|f| f.to_str()).unwrap_or(source_path),
             })
@@ -723,6 +726,118 @@ fn generate_report(storage: &Storage, output_path: &str, samples_per_pattern: us
     println!("  Size: {:.1} KB", html.len() as f64 / 1024.0);
 
     Ok(())
+}
+
+/// Reconstructs a log entry by replacing <*> placeholders in a template with variable values.
+fn reconstruct_entry(template: &str, variables: &str) -> String {
+    let mut var_iter = variables.split('\t');
+    let mut rebuilt = String::with_capacity(template.len() + variables.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '<' && chars.peek() == Some(&'*') {
+            chars.next();
+            if chars.peek() == Some(&'>') {
+                chars.next();
+                if let Some(val) = var_iter.next() {
+                    rebuilt.push_str(val);
+                } else {
+                    rebuilt.push_str("<*>");
+                }
+                continue;
+            }
+            rebuilt.push('<');
+            rebuilt.push('*');
+        } else {
+            rebuilt.push(c);
+        }
+    }
+    rebuilt
+}
+
+fn export_patterns(
+    storage: &Storage,
+    format: &str,
+    output_path: Option<&str>,
+    samples_per_pattern: usize,
+    top_n: usize,
+    filter: Option<Vec<String>>,
+    group_filter: Option<Vec<String>>,
+) -> Result<()> {
+    if format != "json" && format != "csv" {
+        bail!("--format must be 'json' or 'csv', got '{}'", format);
+    }
+
+    let patterns = storage.get_all_patterns_ranked(top_n, filter.as_deref(), group_filter.as_deref())
+        .context("Failed to query patterns")?;
+
+    let content = if format == "json" {
+        let mut pattern_data = Vec::with_capacity(patterns.len());
+        for (id, template, count, group_name) in &patterns {
+            let raw_samples = storage.get_pattern_samples(*id, samples_per_pattern)
+                .unwrap_or_default();
+            let samples: Vec<serde_json::Value> = raw_samples.iter().map(|(vars, source_path)| {
+                serde_json::json!({
+                    "text": reconstruct_entry(template, vars),
+                    "source": Path::new(source_path).file_name()
+                        .and_then(|f| f.to_str()).unwrap_or(source_path),
+                })
+            }).collect();
+            pattern_data.push(serde_json::json!({
+                "id": id,
+                "group": group_name,
+                "template": template,
+                "occurrence_count": count,
+                "samples": samples,
+            }));
+        }
+        serde_json::to_string_pretty(&pattern_data)
+            .context("Failed to serialize JSON")?
+    } else {
+        let mut csv = String::new();
+        // Header
+        let sample_headers: Vec<String> = (1..=samples_per_pattern)
+            .map(|i| format!("sample_{}", i))
+            .collect();
+        csv.push_str(&format!("id,group,template,occurrence_count,{}\n", sample_headers.join(",")));
+        for (id, template, count, group_name) in &patterns {
+            let raw_samples = storage.get_pattern_samples(*id, samples_per_pattern)
+                .unwrap_or_default();
+            let samples: Vec<String> = raw_samples.iter()
+                .map(|(vars, _)| reconstruct_entry(template, vars))
+                .collect();
+            csv.push_str(&format!("{},{},{},{}", id, csv_escape(group_name), csv_escape(template), count));
+            for i in 0..samples_per_pattern {
+                csv.push(',');
+                if let Some(s) = samples.get(i) {
+                    csv.push_str(&csv_escape(s));
+                }
+            }
+            csv.push('\n');
+        }
+        csv
+    };
+
+    match output_path {
+        Some(path) => {
+            std::fs::write(path, &content)
+                .with_context(|| format!("Failed to write export to {}", path))?;
+            eprintln!("Exported {} patterns to {} ({})", patterns.len(), path, format.to_uppercase());
+        }
+        None => {
+            print!("{}", content);
+        }
+    }
+
+    Ok(())
+}
+
+/// Escapes a value for CSV output (wraps in quotes if it contains comma, quote, or newline).
+fn csv_escape(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
 }
 
 /// Derives a canonical file group name from a log file path by stripping
