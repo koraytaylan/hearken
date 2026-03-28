@@ -283,6 +283,36 @@ impl Storage {
         }
         Ok(result)
     }
+
+    /// Get all patterns (id, template, occurrence_count, group_name) optionally filtered by group.
+    pub fn get_patterns_for_dedup(
+        &self,
+        group_filter: Option<&str>,
+    ) -> Result<Vec<(i64, String, i64, String)>, StorageError> {
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(g) = group_filter {
+            (
+                "SELECT p.id, p.template, p.occurrence_count, fg.name \
+                 FROM patterns p JOIN file_groups fg ON p.file_group_id = fg.id \
+                 WHERE fg.name = ? ORDER BY p.occurrence_count DESC".to_string(),
+                vec![Box::new(g.to_string()) as Box<dyn rusqlite::types::ToSql>],
+            )
+        } else {
+            (
+                "SELECT p.id, p.template, p.occurrence_count, fg.name \
+                 FROM patterns p JOIN file_groups fg ON p.file_group_id = fg.id \
+                 ORDER BY fg.name, p.occurrence_count DESC".to_string(),
+                vec![],
+            )
+        };
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+        let mut results = Vec::new();
+        for row in rows { results.push(row?); }
+        Ok(results)
+    }
 }
 
 #[cfg(test)]

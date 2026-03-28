@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use hearken_core::{LogReader, LogTemplate, tokenize};
-use hearken_ml::LogParser;
+use hearken_ml::{LogParser, template_similarity};
 use hearken_storage::Storage;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -88,6 +88,18 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Find near-duplicate patterns within groups
+    Dedup {
+        /// Similarity threshold for considering patterns duplicates (0.0-1.0)
+        #[arg(long, default_value_t = 0.95)]
+        threshold: f64,
+        /// Only check patterns from this file group
+        #[arg(long)]
+        group: Option<String>,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -123,6 +135,12 @@ fn main() -> Result<()> {
         Commands::Diff { before, after, format } => {
             drop(storage);
             diff_databases(&before, &after, &format)?;
+        }
+        Commands::Dedup { threshold, group, format } => {
+            if threshold < 0.0 || threshold > 1.0 {
+                bail!("--threshold must be between 0.0 and 1.0");
+            }
+            find_duplicates(&storage, threshold, group.as_deref(), &format)?;
         }
     }
 
@@ -987,6 +1005,118 @@ fn diff_databases(before_path: &str, after_path: &str, format: &str) -> Result<(
         }
 
         println!("\nSummary: {} new, {} resolved, {} changed (>2x)", new_patterns.len(), resolved_patterns.len(), changed_patterns.len());
+    }
+
+    Ok(())
+}
+
+fn find_duplicates(
+    storage: &Storage,
+    threshold: f64,
+    group_filter: Option<&str>,
+    format: &str,
+) -> Result<()> {
+    use hearken_core::tokenize;
+
+    let patterns = storage.get_patterns_for_dedup(group_filter)?;
+    if patterns.is_empty() {
+        println!("No patterns found in database.");
+        return Ok(());
+    }
+
+    // Group patterns by group_name for pairwise comparison
+    let mut by_group: BTreeMap<String, Vec<(i64, Vec<String>, i64)>> = BTreeMap::new();
+    for (id, template, count, group) in &patterns {
+        let tokens: Vec<String> = tokenize(template).iter().map(|s| s.to_string()).collect();
+        by_group.entry(group.clone()).or_default().push((*id, tokens, *count));
+    }
+
+    // Union-Find for clustering
+    let mut parent: HashMap<i64, i64> = HashMap::new();
+    fn uf_find(parent: &mut HashMap<i64, i64>, x: i64) -> i64 {
+        let p = *parent.get(&x).unwrap_or(&x);
+        if p == x { return x; }
+        let root = uf_find(parent, p);
+        parent.insert(x, root);
+        root
+    }
+
+    let mut total_pairs = 0usize;
+
+    // Compute all pairwise similarities and union duplicates
+    for group_patterns in by_group.values() {
+        if group_patterns.len() < 2 { continue; }
+        let mut by_len: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (i, (_, tokens, _)) in group_patterns.iter().enumerate() {
+            by_len.entry(tokens.len()).or_default().push(i);
+        }
+        for indices in by_len.values() {
+            for (ai, &i) in indices.iter().enumerate() {
+                for &j in &indices[ai + 1..] {
+                    let sim = template_similarity(&group_patterns[i].1, &group_patterns[j].1);
+                    if sim >= threshold {
+                        let ra = uf_find(&mut parent, group_patterns[i].0);
+                        let rb = uf_find(&mut parent, group_patterns[j].0);
+                        if ra != rb { parent.insert(rb, ra); }
+                        total_pairs += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Gather clusters per group
+    struct DupCluster {
+        group: String,
+        members: Vec<(i64, String, i64)>, // (id, template_preview, count)
+    }
+    let mut all_clusters: Vec<DupCluster> = Vec::new();
+
+    for (group_name, group_patterns) in &by_group {
+        let mut clusters: HashMap<i64, Vec<(i64, String, i64)>> = HashMap::new();
+        for (id, tokens, count) in group_patterns {
+            let root = uf_find(&mut parent, *id);
+            let tmpl: String = tokens.join(" ").replace(" \n ", "\n");
+            clusters.entry(root).or_default().push((*id, tmpl, *count));
+        }
+        for members in clusters.into_values() {
+            if members.len() > 1 {
+                all_clusters.push(DupCluster { group: group_name.clone(), members });
+            }
+        }
+    }
+
+    if all_clusters.is_empty() {
+        println!("No near-duplicate patterns found (threshold={:.2}).", threshold);
+        return Ok(());
+    }
+
+    if format == "json" {
+        let json_items: Vec<String> = all_clusters.iter().map(|c| {
+            let members: Vec<String> = c.members.iter().map(|(id, tmpl, count)| {
+                let escaped = tmpl.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+                format!("{{\"id\":{},\"count\":{},\"template\":\"{}\"}}", id, count, escaped)
+            }).collect();
+            format!("{{\"group\":\"{}\",\"patterns\":[{}]}}", c.group, members.join(","))
+        }).collect();
+        println!("[{}]", json_items.join(",\n"));
+    } else {
+        let mut current_group = "";
+        for cluster in &all_clusters {
+            if cluster.group != current_group {
+                current_group = &cluster.group;
+                let group_count = all_clusters.iter().filter(|c| c.group == current_group).count();
+                println!("═══ Group: {} — {} duplicate cluster(s) ═══\n", current_group, group_count);
+            }
+            let combined: i64 = cluster.members.iter().map(|m| m.2).sum();
+            println!("  Cluster ({} patterns, combined {} occurrences):", cluster.members.len(), combined);
+            for (id, tmpl, count) in &cluster.members {
+                let preview = if tmpl.len() > 100 { format!("{}…", &tmpl[..100]) } else { tmpl.clone() };
+                println!("    [id={}, count={}] {}", id, count, preview);
+            }
+            println!();
+        }
+        println!("Found {} duplicate cluster(s) with {} similar pair(s) total.", all_clusters.len(), total_pairs);
     }
 
     Ok(())

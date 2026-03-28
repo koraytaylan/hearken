@@ -8,6 +8,24 @@ pub enum MlError {
     Parse(String),
 }
 
+/// Compare two template token vectors and return a similarity score in [0.0, 1.0].
+/// Tokens must have the same length; `<*>` wildcards match anything.
+/// Newline tokens must match exactly or similarity is 0.
+pub fn template_similarity(a: &[String], b: &[String]) -> f64 {
+    if a.len() != b.len() { return 0.0; }
+    if a.is_empty() { return 1.0; }
+    let mut matches = 0;
+    for (ta, tb) in a.iter().zip(b.iter()) {
+        if ta == "\n" || tb == "\n" {
+            if ta != tb { return 0.0; }
+            matches += 1;
+            continue;
+        }
+        if ta == tb || ta == "<*>" || tb == "<*>" { matches += 1; }
+    }
+    matches as f64 / a.len() as f64
+}
+
 #[derive(Clone, Debug)]
 pub struct InternalTemplate {
     pub id: Option<i64>,
