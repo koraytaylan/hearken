@@ -1,3 +1,5 @@
+pub mod mapper;
+
 use serde::Deserialize;
 use std::fmt;
 

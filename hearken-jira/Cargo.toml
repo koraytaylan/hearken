@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 hearken-core = { version = "0.2.0", path = "../hearken-core" }
 hearken-storage = { version = "0.2.0", path = "../hearken-storage" }
+chrono = { version = "0.4.44", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

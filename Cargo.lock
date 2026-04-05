@@ -587,6 +587,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hearken-jira"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "hearken-core",
+ "hearken-storage",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "hearken-ml"
 version = "0.2.0"
 dependencies = [
