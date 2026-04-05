@@ -63,8 +63,7 @@ jobs:
           BASENAME="hearken-${{ github.ref_name }}-${{ matrix.target }}"
           mkdir -p "$BASENAME"
           cp "target/${{ matrix.target }}/release/hearken-cli" "$BASENAME/"
-          cp README.md CHANGELOG.md LICENSE* 2>/dev/null || true
-          cp README.md CHANGELOG.md "$BASENAME/" 2>/dev/null || true
+          cp README.md LICENSE* "$BASENAME/" 2>/dev/null || true
           tar czf "$BASENAME.tar.gz" "$BASENAME"
           echo "ASSET=$BASENAME.tar.gz" >> $GITHUB_ENV
 
@@ -75,7 +74,7 @@ jobs:
           $basename = "hearken-${{ github.ref_name }}-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $basename
           Copy-Item "target/${{ matrix.target }}/release/hearken-cli.exe" "$basename/"
-          Copy-Item README.md, CHANGELOG.md -Destination "$basename/" -ErrorAction SilentlyContinue
+          Copy-Item README.md -Destination "$basename/" -ErrorAction SilentlyContinue
           Compress-Archive -Path "$basename/*" -DestinationPath "$basename.zip"
           "ASSET=$basename.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
@@ -91,6 +90,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -102,10 +103,25 @@ jobs:
           sha256sum hearken-* > checksums-sha256.txt
           cat checksums-sha256.txt
 
+      - name: Generate changelog
+        id: changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+
+      - name: Merge to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git merge --no-ff "${{ github.ref_name }}" -m "release: ${{ github.ref_name }}"
+          git push origin main
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body: ${{ steps.changelog.outputs.content }}
           files: |
             artifacts/hearken-*.tar.gz
             artifacts/hearken-*.zip

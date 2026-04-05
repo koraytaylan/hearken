@@ -445,7 +445,7 @@ Optional `web` feature adds `hearken-cli/src/web.rs` with Axum-based HTTP server
 
 Optional `jira` feature adds JIRA ticket management via `hearken-jira` crate.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed internals. See [CHANGELOG.md](./CHANGELOG.md) for version history.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed internals. See [GitHub Releases](https://github.com/koraytaylan/hearken/releases) for version history.
 
 ## Roadmap
 
@@ -477,7 +477,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed internals. See [CHANGELOG.
 - [x] **Web Dashboard** — `serve` command with REST API and live dashboard (behind `--features web`)
 - [x] **Watch Mode** — Live file monitoring with incremental processing and OS notifications
 - [x] **Stdin Support** — `process -` for piped input
-- [x] **Documentation** — Comprehensive README, ARCHITECTURE.md, and CHANGELOG.md
+- [x] **Documentation** — Comprehensive README and ARCHITECTURE.md
 
 ### v3 — JIRA Integration ✅
 
