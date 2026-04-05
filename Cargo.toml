@@ -2,6 +2,7 @@
 members = [
     "hearken-cli",
     "hearken-core",
+    "hearken-jira",
     "hearken-ml",
     "hearken-storage",
 ]

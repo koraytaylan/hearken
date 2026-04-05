@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — 2026-04-05
+
+### Added
+
+#### JIRA Integration
+- **`hearken-jira` crate** — New workspace crate (behind `--features jira`) providing JIRA Cloud (API v3, ADF) and Server/Data Center (API v2, wiki markup) support.
+- **`jira status` command** — Shows sync status: which discovered patterns have corresponding JIRA tickets and which are untracked.
+- **`jira sync` command** — Creates new JIRA tickets for untracked patterns. Supports filtering: `--anomalies-only`, `--tags`, `--exclude-tags`, `--min-occurrences`, `--new-only`, `--dry-run`.
+- **`jira update` command** — Updates existing JIRA tickets with latest occurrence counts and timestamps, adds a change comment. Supports `--anomalies-only`, `--tags`, `--exclude-tags`, `--min-occurrences`, `--dry-run`.
+- **`--jira-sync` flag** — Inline JIRA sync after `process` and `watch` commands.
+- **Stateless sync design** — No local sync state stored; JIRA is the source of truth via embedded code-block markers (`{code:title=hearken-metadata}`) in ticket descriptions.
+- **Rate limiting** — Respects JIRA `Retry-After` headers with max 5 retries on 429 responses.
+- **`[jira]` config section** — Configure JIRA connection in `.hearken.toml` with `url`, `type` (cloud/server), `project`, `label`. Secrets via `HEARKEN_JIRA_USER` and `HEARKEN_JIRA_TOKEN` environment variables.
+
 ## [2.0.0] — 2025-07-05
 
 ### Added

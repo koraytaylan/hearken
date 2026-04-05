@@ -1,6 +1,6 @@
 # Hearken — Architecture
 
-Hearken is a Cargo workspace with four crates, each with a clear responsibility. This document describes the internals in enough detail for someone with zero prior context to understand what every piece does, how the pieces fit together, and why key decisions were made.
+Hearken is a Cargo workspace with five crates, each with a clear responsibility. This document describes the internals in enough detail for someone with zero prior context to understand what every piece does, how the pieces fit together, and why key decisions were made.
 
 ---
 
@@ -14,6 +14,12 @@ hearken/
 │       ├── main.rs          # All commands, config loading, watch mode, pipeline
 │       └── web.rs           # Axum web server (behind "web" feature)
 ├── hearken-core/            # Data models, mmap-based I/O, timestamp extraction
+├── hearken-jira/            # JIRA integration (behind "jira" feature)
+│   └── src/
+│       ├── lib.rs           # Config, orchestration (sync/update/status)
+│       ├── client.rs        # JIRA REST API client (Cloud v3 / Server v2)
+│       ├── mapper.rs        # Ticket body builders (ADF + wiki markup), markers
+│       └── filter.rs        # Pattern filtering (tags, anomalies, occurrences)
 ├── hearken-ml/              # Drain prefix tree, template matching, similarity
 └── hearken-storage/         # SQLite persistence, FTS5 search, tags, time-series
 ```
@@ -485,7 +491,34 @@ All rendering is done client-side with vanilla JavaScript (no frameworks). Featu
 
 ---
 
-## 5. CI/CD Integration (`check` and `baseline` commands)
+## 5. `hearken-jira` — JIRA Integration
+
+**Dependencies:** `hearken-core`, `hearken-storage`, `reqwest`, `serde`, `serde_json`, `thiserror`, `toml`, `tokio`, `chrono`
+
+Optional crate enabled via `--features jira` on `hearken-cli`. Provides one-way sync from discovered log patterns to JIRA tickets.
+
+### Architecture
+
+- **`client.rs`** — `JiraClient` wraps `reqwest::Client` with pre-configured auth headers. Cloud instances use Basic auth (base64 `user:token`) against API v3; Server/Data Center instances use Bearer token auth against API v2. Paginated search (`POST /search`) fetches all matching tickets with rate-limit retry (respects `Retry-After`, max 5 retries).
+- **`mapper.rs`** — Stateless ticket body construction. Generates both **wiki markup** (Server) and **ADF JSON** (Cloud) from the same `TicketBodyInput`. Each ticket description embeds a code-block marker (`{code:title=hearken-metadata}\nhearken:db=X;pattern_id=Y;occurrences=Z\n{code}`) that hearken uses to match patterns to existing tickets without any local state.
+- **`filter.rs`** — `filter_patterns()` applies user-selected criteria (anomalies-only, tag include/exclude, min occurrences, new-only) against the storage layer and returns a filtered list of `FilteredPattern` structs.
+- **`lib.rs`** — Orchestration functions:
+  - **`sync()`** — Fetches existing hearken tickets from JIRA, builds a pattern→ticket map via markers, filters patterns, and creates new tickets for untracked patterns.
+  - **`update()`** — Same ticket discovery, then updates description and adds a change comment for patterns whose occurrence count changed.
+  - **`status()`** — Displays which patterns are tracked vs. untracked in JIRA.
+
+### Stateless Design
+
+No local sync state is stored. JIRA is the source of truth. The embedded code-block marker in each ticket description contains `db`, `pattern_id`, and `occurrences`. On every sync/update, hearken fetches all tickets with the configured label, parses their markers, and builds the mapping on the fly. This keeps the feature fully optional with zero impact on the core database schema.
+
+### Configuration
+
+Configured via `[jira]` section in `.hearken.toml`. Sensitive values (`HEARKEN_JIRA_USER`, `HEARKEN_JIRA_TOKEN`) are read from environment variables. The `type` field selects Cloud vs Server behavior (API version, auth scheme, body format).
+
+---
+
+## 6. CI/CD Integration (`check` and `baseline` commands)
+
 
 ### Check Command
 
@@ -506,7 +539,7 @@ Tags-file and group filtering are supported to narrow the scope of checks.
 
 ---
 
-## 6. Correlation Analysis (`correlate` command)
+## 7. Correlation Analysis (`correlate` command)
 
 Uses a sliding time window to detect cross-group pattern co-occurrence:
 
@@ -519,7 +552,7 @@ This surfaces operational correlations like "DB connection timeout in `app.log` 
 
 ---
 
-## 7. Root-Cause Clustering (`cluster` command)
+## 8. Root-Cause Clustering (`cluster` command)
 
 Groups patterns by shared variable values using Union-Find:
 
@@ -533,7 +566,7 @@ This surfaces root-cause clusters like "these 5 patterns all share IP `10.0.0.42
 
 ---
 
-## 8. Watch Mode (`watch` command)
+## 9. Watch Mode (`watch` command)
 
 Live file monitoring with incremental processing:
 
@@ -546,7 +579,7 @@ The watcher runs in a loop until interrupted with Ctrl+C.
 
 ---
 
-## 9. Web Dashboard (`serve` command, `--features web`)
+## 10. Web Dashboard (`serve` command, `--features web`)
 
 An optional Axum-based HTTP server that exposes the database through a REST API and a live HTML dashboard.
 
@@ -569,7 +602,7 @@ An optional Axum-based HTTP server that exposes the database through a REST API 
 
 ---
 
-## 10. Pattern Suppression
+## 11. Pattern Suppression
 
 Pattern suppression allows known-noise patterns to be hidden from reports without deleting them:
 
@@ -580,7 +613,7 @@ Pattern suppression allows known-noise patterns to be hidden from reports withou
 
 ---
 
-## 11. Temporal Bucketing
+## 12. Temporal Bucketing
 
 The `--bucket` flag on `report` and `export` commands controls how occurrence timestamps are aggregated:
 

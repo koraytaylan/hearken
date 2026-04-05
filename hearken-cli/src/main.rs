@@ -26,6 +26,9 @@ struct HearkenConfig {
     export: ExportConfig,
     #[serde(default)]
     check: CheckConfig,
+    #[cfg(feature = "jira")]
+    #[serde(default)]
+    jira: Option<hearken_jira::JiraTomlConfig>,
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -114,6 +117,10 @@ enum Commands {
         /// Override the derived group name (default for stdin: "stdin")
         #[arg(long)]
         group_name: Option<String>,
+        /// After processing, sync patterns to JIRA
+        #[cfg(feature = "jira")]
+        #[arg(long)]
+        jira_sync: bool,
     },
     /// Search for patterns in the database
     Search {
@@ -298,6 +305,16 @@ enum Commands {
         /// Trigger OS notification when any anomaly score exceeds this value
         #[arg(long)]
         alert_score: Option<f64>,
+        /// After processing, sync patterns to JIRA
+        #[cfg(feature = "jira")]
+        #[arg(long)]
+        jira_sync: bool,
+    },
+    /// JIRA integration: create and manage JIRA tickets from patterns
+    #[cfg(feature = "jira")]
+    Jira {
+        #[command(subcommand)]
+        action: JiraAction,
     },
     /// Start a local HTTP server with a live web dashboard
     #[cfg(feature = "web")]
@@ -326,6 +343,41 @@ enum BaselineAction {
     },
 }
 
+#[cfg(feature = "jira")]
+#[derive(Subcommand)]
+enum JiraAction {
+    /// Show sync status: pattern counts, ticket counts, connection check
+    Status {},
+    /// Create new tickets and update existing ones
+    Sync {
+        #[arg(long)]
+        anomalies_only: bool,
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        #[arg(long, value_delimiter = ',')]
+        exclude_tags: Option<Vec<String>>,
+        #[arg(long)]
+        min_occurrences: Option<i64>,
+        #[arg(long)]
+        new_only: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Update existing JIRA tickets only (no new ticket creation)
+    Update {
+        #[arg(long)]
+        anomalies_only: bool,
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        #[arg(long, value_delimiter = ',')]
+        exclude_tags: Option<Vec<String>>,
+        #[arg(long)]
+        min_occurrences: Option<i64>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 fn main() -> Result<()> {
     let config = load_config();
     let mut cli = Cli::parse();
@@ -345,6 +397,8 @@ fn main() -> Result<()> {
             mut threshold,
             mut batch_size,
             group_name,
+            #[cfg(feature = "jira")]
+            jira_sync,
         } => {
             if threshold == 0.5 {
                 if let Some(t) = config.threshold {
@@ -393,6 +447,31 @@ fn main() -> Result<()> {
                 group_name.as_deref(),
                 &stdin_paths,
             )?;
+            #[cfg(feature = "jira")]
+            if jira_sync {
+                if let Some(jira_toml) = config.jira {
+                    let jira_config = hearken_jira::JiraConfig::from_toml_and_env(jira_toml)
+                        .context("Failed to load JIRA configuration")?;
+                    let db_name = Path::new(&cli.database)
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or(&cli.database)
+                        .to_string();
+                    let rt =
+                        tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
+                    let result = rt.block_on(hearken_jira::sync(
+                        jira_config,
+                        &storage,
+                        &db_name,
+                        &hearken_jira::filter::FilterOptions::default(),
+                        None,
+                        false,
+                    ))?;
+                    result.print_summary();
+                } else {
+                    eprintln!("Warning: --jira-sync specified but no [jira] section in config");
+                }
+            }
         }
         Commands::Search { query } => {
             search_patterns(&storage, &query)?;
@@ -603,6 +682,8 @@ fn main() -> Result<()> {
             mut threshold,
             mut batch_size,
             alert_score,
+            #[cfg(feature = "jira")]
+            jira_sync,
         } => {
             if threshold == 0.5 {
                 if let Some(t) = config.threshold {
@@ -629,6 +710,31 @@ fn main() -> Result<()> {
                 batch_size,
                 alert_score,
             )?;
+            #[cfg(feature = "jira")]
+            if jira_sync {
+                if let Some(jira_toml) = config.jira {
+                    let jira_config = hearken_jira::JiraConfig::from_toml_and_env(jira_toml)
+                        .context("Failed to load JIRA configuration")?;
+                    let db_name = Path::new(&cli.database)
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or(&cli.database)
+                        .to_string();
+                    let rt =
+                        tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
+                    let result = rt.block_on(hearken_jira::sync(
+                        jira_config,
+                        &storage,
+                        &db_name,
+                        &hearken_jira::filter::FilterOptions::default(),
+                        None,
+                        false,
+                    ))?;
+                    result.print_summary();
+                } else {
+                    eprintln!("Warning: --jira-sync specified but no [jira] section in config");
+                }
+            }
         }
         Commands::Baseline { action } => match action {
             BaselineAction::Save { output } => {
@@ -640,6 +746,92 @@ fn main() -> Result<()> {
                 format_diff(&diff, &baseline, &cli.database, &format)?;
             }
         },
+        #[cfg(feature = "jira")]
+        Commands::Jira { action } => {
+            let jira_toml = config.jira.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No [jira] section found in .hearken.toml. See docs for configuration."
+                )
+            })?;
+            let jira_config = hearken_jira::JiraConfig::from_toml_and_env(jira_toml)
+                .context("Failed to load JIRA configuration")?;
+            let db_name = Path::new(&cli.database)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(&cli.database)
+                .to_string();
+
+            let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
+
+            match action {
+                JiraAction::Status {} => {
+                    rt.block_on(hearken_jira::status(jira_config, &storage, &db_name))?;
+                }
+                JiraAction::Sync {
+                    anomalies_only,
+                    tags,
+                    exclude_tags,
+                    min_occurrences,
+                    new_only,
+                    dry_run,
+                } => {
+                    let filter_opts = hearken_jira::filter::FilterOptions {
+                        anomalies_only,
+                        tags,
+                        exclude_tags,
+                        min_occurrences,
+                        new_only,
+                    };
+                    let anomaly_ids = if anomalies_only {
+                        let anomalies =
+                            compute_anomalies(&storage, None, usize::MAX, &HashSet::new())?;
+                        Some(anomalies.iter().map(|a| a.id).collect::<HashSet<i64>>())
+                    } else {
+                        None
+                    };
+                    let result = rt.block_on(hearken_jira::sync(
+                        jira_config,
+                        &storage,
+                        &db_name,
+                        &filter_opts,
+                        anomaly_ids.as_ref(),
+                        dry_run,
+                    ))?;
+                    result.print_summary();
+                }
+                JiraAction::Update {
+                    anomalies_only,
+                    tags,
+                    exclude_tags,
+                    min_occurrences,
+                    dry_run,
+                } => {
+                    let filter_opts = hearken_jira::filter::FilterOptions {
+                        anomalies_only,
+                        tags,
+                        exclude_tags,
+                        min_occurrences,
+                        new_only: false,
+                    };
+                    let anomaly_ids = if anomalies_only {
+                        let anomalies =
+                            compute_anomalies(&storage, None, usize::MAX, &HashSet::new())?;
+                        Some(anomalies.iter().map(|a| a.id).collect::<HashSet<i64>>())
+                    } else {
+                        None
+                    };
+                    let result = rt.block_on(hearken_jira::update(
+                        jira_config,
+                        &storage,
+                        &db_name,
+                        &filter_opts,
+                        anomaly_ids.as_ref(),
+                        dry_run,
+                    ))?;
+                    result.print_summary();
+                }
+            }
+        }
         #[cfg(feature = "web")]
         Commands::Serve { port } => {
             drop(storage);
