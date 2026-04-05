@@ -57,6 +57,12 @@ To include the web dashboard:
 cargo build --release --features web
 ```
 
+To include JIRA integration:
+
+```bash
+cargo build --release --features jira
+```
+
 ## Usage
 
 ### Process Log Files
@@ -329,6 +335,16 @@ max_anomaly_score = 5.0
 max_new_patterns = 50
 baseline = "hearken-baseline.db"
 tags_file = "my-tags.json"
+
+# Requires --features jira
+[jira]
+url = "https://your-instance.atlassian.net"
+type = "cloud"             # "cloud" or "server"
+project = "OPS"
+label = "hearken"
+# user = "..."             # Can also set via HEARKEN_JIRA_USER env var
+# issue_type = "Bug"       # Default: "Bug"
+# Secrets via env vars: HEARKEN_JIRA_USER, HEARKEN_JIRA_TOKEN
 ```
 
 ### Clean State and Reprocess
@@ -356,6 +372,9 @@ rm hearken.db* && hearken-cli process server.log
 | `cluster` | Root-cause clustering by shared variables |
 | `watch <files...>` | Live file monitoring with incremental processing |
 | `serve` | Start web dashboard (requires `--features web`) |
+| `jira status` | Show JIRA sync status for discovered patterns (requires `--features jira`) |
+| `jira sync` | Create new JIRA tickets for untracked patterns (requires `--features jira`) |
+| `jira update` | Update existing JIRA tickets with latest data (requires `--features jira`) |
 
 **Global flag:** `-d, --database <path>` — Database file path (default: `hearken.db`)
 
@@ -413,7 +432,7 @@ State is stored in a plain SQLite database (`hearken.db` by default) with WAL mo
 
 ## Architecture
 
-Hearken is a Cargo workspace with four crates:
+Hearken is a Cargo workspace with five crates:
 
 | Crate | Role |
 |---|---|
@@ -421,8 +440,11 @@ Hearken is a Cargo workspace with four crates:
 | `hearken-core` | Data models (`LogSource`, `LogTemplate`, `LogOccurrence`), mmap-based `LogReader`, timestamp extraction |
 | `hearken-ml` | Drain prefix tree, template matching, structural & semantic similarity, variable extraction |
 | `hearken-storage` | SQLite persistence, schema management, FTS5 search, trend/time-series queries, tag CRUD, performance pragmas |
+| `hearken-jira` | JIRA integration: ticket creation/update, Cloud (ADF) & Server (wiki markup) support, pattern filtering |
 
 Optional `web` feature adds `hearken-cli/src/web.rs` with Axum-based HTTP server and REST API.
+
+Optional `jira` feature adds JIRA ticket management via `hearken-jira` crate.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed internals. See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
@@ -457,6 +479,16 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed internals. See [CHANGELOG.
 - [x] **Watch Mode** — Live file monitoring with incremental processing and OS notifications
 - [x] **Stdin Support** — `process -` for piped input
 - [x] **Documentation** — Comprehensive README, ARCHITECTURE.md, and CHANGELOG.md
+
+### v3 — JIRA Integration ✅
+
+- [x] **`hearken-jira` crate** — New workspace crate behind `--features jira` with JIRA Cloud (API v3, ADF) and Server/Data Center (API v2, wiki markup) support
+- [x] **`jira status`** — Show sync status: which patterns have JIRA tickets, which are untracked
+- [x] **`jira sync`** — Create new JIRA tickets for untracked patterns with configurable filtering (anomalies-only, tags, exclude-tags, min-occurrences, new-only, dry-run)
+- [x] **`jira update`** — Update existing JIRA tickets with latest occurrence counts, timestamps, and a change comment
+- [x] **`--jira-sync` flag** — Inline sync after `process` and `watch` commands
+- [x] **Stateless sync** — No local state; JIRA is the source of truth via embedded code-block markers in ticket descriptions
+- [x] **Rate limiting** — Respects JIRA `Retry-After` headers with configurable max retries
 
 ## License
 
