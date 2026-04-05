@@ -1,0 +1,18 @@
+[package]
+name = "hearken-jira"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+hearken-core = { version = "0.2.0", path = "../hearken-core" }
+hearken-storage = { version = "0.2.0", path = "../hearken-storage" }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0.18"
+toml = "0.8"
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
