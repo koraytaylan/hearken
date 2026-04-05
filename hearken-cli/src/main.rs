@@ -457,8 +457,8 @@ fn main() -> Result<()> {
                         .and_then(|f| f.to_str())
                         .unwrap_or(&cli.database)
                         .to_string();
-                    let rt = tokio::runtime::Runtime::new()
-                        .context("Failed to create Tokio runtime")?;
+                    let rt =
+                        tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
                     let result = rt.block_on(hearken_jira::sync(
                         jira_config,
                         &storage,
@@ -720,8 +720,8 @@ fn main() -> Result<()> {
                         .and_then(|f| f.to_str())
                         .unwrap_or(&cli.database)
                         .to_string();
-                    let rt = tokio::runtime::Runtime::new()
-                        .context("Failed to create Tokio runtime")?;
+                    let rt =
+                        tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
                     let result = rt.block_on(hearken_jira::sync(
                         jira_config,
                         &storage,
@@ -749,7 +749,9 @@ fn main() -> Result<()> {
         #[cfg(feature = "jira")]
         Commands::Jira { action } => {
             let jira_toml = config.jira.ok_or_else(|| {
-                anyhow::anyhow!("No [jira] section found in .hearken.toml. See docs for configuration.")
+                anyhow::anyhow!(
+                    "No [jira] section found in .hearken.toml. See docs for configuration."
+                )
             })?;
             let jira_config = hearken_jira::JiraConfig::from_toml_and_env(jira_toml)
                 .context("Failed to load JIRA configuration")?;
@@ -781,7 +783,8 @@ fn main() -> Result<()> {
                         new_only,
                     };
                     let anomaly_ids = if anomalies_only {
-                        let anomalies = compute_anomalies(&storage, None, usize::MAX, &HashSet::new())?;
+                        let anomalies =
+                            compute_anomalies(&storage, None, usize::MAX, &HashSet::new())?;
                         Some(anomalies.iter().map(|a| a.id).collect::<HashSet<i64>>())
                     } else {
                         None
@@ -811,7 +814,8 @@ fn main() -> Result<()> {
                         new_only: false,
                     };
                     let anomaly_ids = if anomalies_only {
-                        let anomalies = compute_anomalies(&storage, None, usize::MAX, &HashSet::new())?;
+                        let anomalies =
+                            compute_anomalies(&storage, None, usize::MAX, &HashSet::new())?;
                         Some(anomalies.iter().map(|a| a.id).collect::<HashSet<i64>>())
                     } else {
                         None
