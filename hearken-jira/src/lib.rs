@@ -1,3 +1,4 @@
+pub mod filter;
 pub mod mapper;
 
 use serde::Deserialize;
