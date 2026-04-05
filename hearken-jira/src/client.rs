@@ -118,8 +118,10 @@ impl JiraClient {
 
     pub async fn search_issues(&self, jql: &str) -> Result<Vec<JiraIssue>, JiraError> {
         const MAX_RESULTS: i64 = 50;
+        const MAX_RETRIES: u32 = 5;
         let mut start_at: i64 = 0;
         let mut all_issues: Vec<JiraIssue> = Vec::new();
+        let mut retries: u32 = 0;
 
         loop {
             let body = serde_json::json!({
@@ -141,16 +143,23 @@ impl JiraClient {
             let status = response.status();
 
             if status.as_u16() == 429 {
-                // Respect Retry-After header
+                retries += 1;
+                if retries > MAX_RETRIES {
+                    return Err(JiraError::Api {
+                        status: 429,
+                        message: "Rate limited: max retries exceeded".into(),
+                    });
+                }
                 let retry_after = response
                     .headers()
                     .get("Retry-After")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(60);
+                    .unwrap_or(5);
                 tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
                 continue;
             }
+            retries = 0; // Reset on success
 
             if !status.is_success() {
                 let message = response.text().await.unwrap_or_default();

@@ -515,7 +515,11 @@ pub async fn status(
 
 fn truncate_preview(template: &str) -> String {
     if template.len() > 60 {
-        format!("{}...", &template[..60])
+        let mut end = 60;
+        while end > 0 && !template.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &template[..end])
     } else {
         template.to_string()
     }

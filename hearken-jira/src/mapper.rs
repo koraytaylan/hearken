@@ -87,7 +87,12 @@ pub fn build_summary(template: &str) -> String {
     let prefix = "[hearken] ";
     let raw = format!("{}{}", prefix, template);
     if raw.len() > 255 {
-        format!("{}...", &raw[..252])
+        // Find a char-boundary-safe truncation point
+        let mut end = 252;
+        while end > 0 && !raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &raw[..end])
     } else {
         raw
     }
@@ -216,11 +221,13 @@ pub fn build_change_comment_wiki(
 ) -> String {
     let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let diff = new_occurrences - old_occurrences;
+    let sign = if diff >= 0 { "+" } else { "" };
     format!(
-        "[hearken sync] Updated {}\n* Occurrences: {} -> {} (+{})\n* Last seen: {}",
+        "[hearken sync] Updated {}\n* Occurrences: {} -> {} ({}{})\n* Last seen: {}",
         timestamp,
         format_number(old_occurrences),
         format_number(new_occurrences),
+        sign,
         format_number(diff),
         last_seen,
     )
@@ -238,11 +245,13 @@ pub fn build_change_comment_adf(
 ) -> Value {
     let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let diff = new_occurrences - old_occurrences;
+    let sign = if diff >= 0 { "+" } else { "" };
     let text = format!(
-        "[hearken sync] Updated {} | Occurrences: {} -> {} (+{}) | Last seen: {}",
+        "[hearken sync] Updated {} | Occurrences: {} -> {} ({}{}) | Last seen: {}",
         timestamp,
         format_number(old_occurrences),
         format_number(new_occurrences),
+        sign,
         format_number(diff),
         last_seen,
     );
