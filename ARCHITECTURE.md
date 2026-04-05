@@ -495,7 +495,7 @@ All rendering is done client-side with vanilla JavaScript (no frameworks). Featu
 
 **Dependencies:** `hearken-core`, `hearken-storage`, `reqwest`, `serde`, `serde_json`, `thiserror`, `toml`, `tokio`, `chrono`
 
-Optional crate enabled via `--features jira` on `hearken-cli`. Provides bidirectional sync between discovered log patterns and JIRA tickets.
+Optional crate enabled via `--features jira` on `hearken-cli`. Provides one-way sync from discovered log patterns to JIRA tickets.
 
 ### Architecture
 

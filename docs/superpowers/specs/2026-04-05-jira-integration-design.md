@@ -226,7 +226,7 @@ The `client.rs` module abstracts this behind a `JiraClient` that dispatches to t
 ### Authentication
 
 - **Cloud:** Basic auth — `Authorization: Basic base64(user:token)`
-- **Server:** Bearer token — `Authorization: Bearer <token>`, with fallback to basic auth
+- **Server:** Bearer token — `Authorization: Bearer <token>`
 
 ### Pagination
 

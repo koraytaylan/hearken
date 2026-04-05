@@ -109,8 +109,7 @@ impl SyncResult {
             println!("  ~ Updated: {}", key);
         }
         for (tmpl, err) in &self.failed {
-            let preview = if tmpl.len() > 60 { &tmpl[..60] } else { tmpl };
-            eprintln!("  ! Failed: {} — {}", preview, err);
+            eprintln!("  ! Failed: {} — {}", truncate_preview(tmpl), err);
         }
     }
 }
@@ -129,6 +128,20 @@ pub fn extract_description_text(issue: &JiraIssue) -> String {
 
 pub fn extract_adf_text(node: &serde_json::Value) -> String {
     let mut result = String::new();
+
+    // Reconstruct {code:title=hearken-metadata} wrapper for ADF codeBlock nodes
+    // so that parse_marker() can find the marker inside the expected block.
+    let is_metadata_block = node.get("type").and_then(|t| t.as_str()) == Some("codeBlock")
+        && node
+            .get("attrs")
+            .and_then(|a| a.get("language"))
+            .and_then(|l| l.as_str())
+            == Some("hearken-metadata");
+
+    if is_metadata_block {
+        result.push_str("{code:title=hearken-metadata}\n");
+    }
+
     if let Some(text) = node.get("text").and_then(|t| t.as_str()) {
         result.push_str(text);
         result.push('\n');
@@ -138,6 +151,11 @@ pub fn extract_adf_text(node: &serde_json::Value) -> String {
             result.push_str(&extract_adf_text(child));
         }
     }
+
+    if is_metadata_block {
+        result.push_str("{code}\n");
+    }
+
     result
 }
 

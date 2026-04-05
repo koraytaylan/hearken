@@ -24,7 +24,7 @@ pub fn filter_patterns(
     synced_pattern_ids: &HashSet<i64>,
     anomaly_ids: Option<&HashSet<i64>>,
 ) -> Result<Vec<FilteredPattern>, hearken_storage::StorageError> {
-    let all_patterns = storage.get_all_patterns_ranked(usize::MAX, None, None)?;
+    let all_patterns = storage.get_all_patterns_ranked(i64::MAX as usize, None, None)?;
 
     let need_tags = options.tags.is_some() || options.exclude_tags.is_some();
     let tag_map: HashMap<i64, Vec<String>> = if need_tags {

@@ -342,9 +342,8 @@ url = "https://your-instance.atlassian.net"
 type = "cloud"             # "cloud" or "server"
 project = "OPS"
 label = "hearken"
-# user = "..."             # Can also set via HEARKEN_JIRA_USER env var
 # issue_type = "Bug"       # Default: "Bug"
-# Secrets via env vars: HEARKEN_JIRA_USER, HEARKEN_JIRA_TOKEN
+# Credentials via env vars: HEARKEN_JIRA_USER, HEARKEN_JIRA_TOKEN
 ```
 
 ### Clean State and Reprocess

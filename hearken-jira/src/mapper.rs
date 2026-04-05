@@ -42,38 +42,69 @@ pub fn build_marker(db: &str, pattern_id: i64, occurrences: i64) -> String {
     )
 }
 
-/// Scans `description` line-by-line for a `hearken:` marker and parses it.
+/// Tries to parse a single line as a hearken marker.
+fn parse_marker_line(line: &str) -> Option<HearkenMarker> {
+    let rest = line.strip_prefix("hearken:")?;
+    let mut parts = rest.split(';');
+
+    let db_part = parts.next()?;
+    let pattern_id_part = parts.next()?;
+    let occurrences_part = parts.next()?;
+
+    // Require exactly three fields — no extra segments.
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let db = db_part.strip_prefix("db=")?.trim();
+    if db.is_empty() {
+        return None;
+    }
+
+    let pattern_id = pattern_id_part
+        .strip_prefix("pattern_id=")?
+        .trim()
+        .parse()
+        .ok()?;
+    let occurrences = occurrences_part
+        .strip_prefix("occurrences=")?
+        .trim()
+        .parse()
+        .ok()?;
+
+    Some(HearkenMarker {
+        db: db.to_string(),
+        pattern_id,
+        occurrences,
+    })
+}
+
+/// Scans `description` for a `hearken:` marker inside a `{code:title=hearken-metadata}` block.
+/// Falls back to matching a bare marker line only if the entire description is that line.
 /// Returns `None` if no valid marker is found.
 pub fn parse_marker(description: &str) -> Option<HearkenMarker> {
+    let mut in_metadata_block = false;
+
     for line in description.lines() {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix("hearken:") {
-            let mut db: Option<String> = None;
-            let mut pattern_id: Option<i64> = None;
-            let mut occurrences: Option<i64> = None;
 
-            for pair in rest.split(';') {
-                let pair = pair.trim();
-                if let Some((key, value)) = pair.split_once('=') {
-                    match key.trim() {
-                        "db" => db = Some(value.trim().to_string()),
-                        "pattern_id" => pattern_id = value.trim().parse().ok(),
-                        "occurrences" => occurrences = value.trim().parse().ok(),
-                        _ => {}
-                    }
-                }
-            }
+        if line == "{code:title=hearken-metadata}" {
+            in_metadata_block = true;
+            continue;
+        }
 
-            if let (Some(db), Some(pattern_id), Some(occurrences)) = (db, pattern_id, occurrences) {
-                return Some(HearkenMarker {
-                    db,
-                    pattern_id,
-                    occurrences,
-                });
-            }
+        if line == "{code}" {
+            in_metadata_block = false;
+            continue;
+        }
+
+        if in_metadata_block && let Some(marker) = parse_marker_line(line) {
+            return Some(marker);
         }
     }
-    None
+
+    // Fallback: accept a bare marker only if description is just that line.
+    parse_marker_line(description.trim())
 }
 
 // ---------------------------------------------------------------------------
