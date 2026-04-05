@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 web = ["axum", "tokio", "tower-http"]
+jira = ["hearken-jira", "tokio"]
 
 [dependencies]
 ahash = "0.8.12"
@@ -12,6 +13,7 @@ anyhow = "1.0.102"
 axum = { version = "0.8", optional = true }
 clap = { version = "4.6.0", features = ["derive"] }
 hearken-core = { version = "0.2.0", path = "../hearken-core" }
+hearken-jira = { version = "0.2.0", path = "../hearken-jira", optional = true }
 hearken-ml = { version = "0.2.0", path = "../hearken-ml" }
 hearken-storage = { version = "0.2.0", path = "../hearken-storage" }
 notify = "7"
