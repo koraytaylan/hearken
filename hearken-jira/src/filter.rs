@@ -195,9 +195,11 @@ mod tests {
         let synced = HashSet::new();
         let results = filter_patterns(&storage, &options, &synced, None).unwrap();
         assert_eq!(results.len(), 3);
-        assert!(!results
-            .iter()
-            .any(|p| p.template.contains("database connection lost")));
+        assert!(
+            !results
+                .iter()
+                .any(|p| p.template.contains("database connection lost"))
+        );
     }
 
     #[test]
@@ -247,8 +249,10 @@ mod tests {
         assert_eq!(results.len(), 3);
         // Should have: login failed (100), timeout (50), request completed (500)
         // Should NOT have: database connection lost (10, also suppressed)
-        assert!(!results
-            .iter()
-            .any(|p| p.template.contains("database connection lost")));
+        assert!(
+            !results
+                .iter()
+                .any(|p| p.template.contains("database connection lost"))
+        );
     }
 }

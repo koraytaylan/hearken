@@ -1,5 +1,5 @@
 use chrono::Utc;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Metadata marker embedded in JIRA ticket descriptions so hearken can
 /// identify and update its own tickets.
@@ -64,8 +64,7 @@ pub fn parse_marker(description: &str) -> Option<HearkenMarker> {
                 }
             }
 
-            if let (Some(db), Some(pattern_id), Some(occurrences)) = (db, pattern_id, occurrences)
-            {
+            if let (Some(db), Some(pattern_id), Some(occurrences)) = (db, pattern_id, occurrences) {
                 return Some(HearkenMarker {
                     db,
                     pattern_id,
@@ -158,7 +157,11 @@ pub fn build_description_wiki(input: &TicketBodyInput) -> String {
 
     // Marker
     body.push('\n');
-    body.push_str(&build_marker(&input.db_name, input.pattern_id, input.occurrence_count));
+    body.push_str(&build_marker(
+        &input.db_name,
+        input.pattern_id,
+        input.occurrence_count,
+    ));
     body.push('\n');
 
     body

@@ -93,8 +93,7 @@ pub struct SyncResult {
 
 impl SyncResult {
     pub fn print_summary(&self) {
-        let total =
-            self.created.len() + self.updated.len() + self.unchanged + self.failed.len();
+        let total = self.created.len() + self.updated.len() + self.unchanged + self.failed.len();
         println!(
             "Synced {} patterns ({} created, {} updated, {} unchanged, {} failed)",
             total,
@@ -262,18 +261,16 @@ pub async fn sync(
                 JiraInstanceType::Cloud => mapper::build_description_adf(&input),
             };
 
-            let last_seen_str = last_seen
-                .as_deref()
-                .unwrap_or("unknown");
+            let last_seen_str = last_seen.as_deref().unwrap_or("unknown");
 
             let comment_body = match config.instance_type {
-                JiraInstanceType::Server => serde_json::Value::String(
-                    mapper::build_change_comment_wiki(
+                JiraInstanceType::Server => {
+                    serde_json::Value::String(mapper::build_change_comment_wiki(
                         marker.occurrences,
                         pattern.occurrence_count,
                         last_seen_str,
-                    ),
-                ),
+                    ))
+                }
                 JiraInstanceType::Cloud => mapper::build_change_comment_adf(
                     marker.occurrences,
                     pattern.occurrence_count,
@@ -403,13 +400,13 @@ pub async fn update(
         let last_seen_str = last_seen.as_deref().unwrap_or("unknown");
 
         let comment_body = match config.instance_type {
-            JiraInstanceType::Server => serde_json::Value::String(
-                mapper::build_change_comment_wiki(
+            JiraInstanceType::Server => {
+                serde_json::Value::String(mapper::build_change_comment_wiki(
                     marker.occurrences,
                     pattern.occurrence_count,
                     last_seen_str,
-                ),
-            ),
+                ))
+            }
             JiraInstanceType::Cloud => mapper::build_change_comment_adf(
                 marker.occurrences,
                 pattern.occurrence_count,
@@ -472,10 +469,7 @@ pub async fn status(
         .unwrap_or(0);
 
     // Patterns that have a JIRA ticket for this db
-    let with_tickets: usize = ticket_map
-        .keys()
-        .filter(|(db, _)| db == db_name)
-        .count();
+    let with_tickets: usize = ticket_map.keys().filter(|(db, _)| db == db_name).count();
 
     // Patterns without a ticket (new / unsynced)
     let new_count = (total_patterns as usize).saturating_sub(with_tickets);
@@ -559,20 +553,38 @@ mod tests {
         assert_eq!(config.issue_type, Some("Task".to_string()));
     }
 
+    /// Combined into one test to avoid env var race conditions across parallel
+    /// test threads (env vars are process-global).
     #[test]
-    fn test_jira_config_from_env() {
+    fn test_jira_config_env_vars() {
+        // Part 1: missing env vars → error
+        unsafe {
+            std::env::remove_var("HEARKEN_JIRA_USER");
+            std::env::remove_var("HEARKEN_JIRA_TOKEN");
+        }
+        let toml_missing = JiraTomlConfig {
+            url: "https://myco.atlassian.net".to_string(),
+            project: "OPS".to_string(),
+            label: "hearken".to_string(),
+            instance_type: JiraInstanceType::Cloud,
+            issue_type: None,
+        };
+        let err = JiraConfig::from_toml_and_env(toml_missing).unwrap_err();
+        assert!(err.to_string().contains("HEARKEN_JIRA_USER"));
+
+        // Part 2: set env vars → success
         unsafe {
             std::env::set_var("HEARKEN_JIRA_USER", "test@example.com");
             std::env::set_var("HEARKEN_JIRA_TOKEN", "secret-token");
         }
-        let toml = JiraTomlConfig {
+        let toml_ok = JiraTomlConfig {
             url: "https://myco.atlassian.net/".to_string(),
             project: "OPS".to_string(),
             label: "hearken".to_string(),
             instance_type: JiraInstanceType::Cloud,
             issue_type: None,
         };
-        let config = JiraConfig::from_toml_and_env(toml).unwrap();
+        let config = JiraConfig::from_toml_and_env(toml_ok).unwrap();
         assert_eq!(config.url, "https://myco.atlassian.net");
         assert_eq!(config.issue_type, "Bug");
         assert_eq!(config.user, "test@example.com");
@@ -581,22 +593,5 @@ mod tests {
             std::env::remove_var("HEARKEN_JIRA_USER");
             std::env::remove_var("HEARKEN_JIRA_TOKEN");
         }
-    }
-
-    #[test]
-    fn test_jira_config_missing_env() {
-        unsafe {
-            std::env::remove_var("HEARKEN_JIRA_USER");
-            std::env::remove_var("HEARKEN_JIRA_TOKEN");
-        }
-        let toml = JiraTomlConfig {
-            url: "https://myco.atlassian.net".to_string(),
-            project: "OPS".to_string(),
-            label: "hearken".to_string(),
-            instance_type: JiraInstanceType::Cloud,
-            issue_type: None,
-        };
-        let err = JiraConfig::from_toml_and_env(toml).unwrap_err();
-        assert!(err.to_string().contains("HEARKEN_JIRA_USER"));
     }
 }
