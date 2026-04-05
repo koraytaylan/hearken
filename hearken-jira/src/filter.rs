@@ -37,19 +37,18 @@ pub fn filter_patterns(
 
     for (id, template, count, group) in all_patterns {
         // Filter: anomalies_only
-        if options.anomalies_only {
-            if let Some(ids) = anomaly_ids {
-                if !ids.contains(&id) {
-                    continue;
-                }
-            }
+        if options.anomalies_only
+            && let Some(ids) = anomaly_ids
+            && !ids.contains(&id)
+        {
+            continue;
         }
 
         // Filter: min_occurrences
-        if let Some(min) = options.min_occurrences {
-            if count < min {
-                continue;
-            }
+        if let Some(min) = options.min_occurrences
+            && count < min
+        {
+            continue;
         }
 
         // Filter: tags (must have at least one matching tag)

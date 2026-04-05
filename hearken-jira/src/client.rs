@@ -6,7 +6,7 @@ struct SearchResponse {
     issues: Vec<JiraIssue>,
     total: i64,
     #[serde(rename = "startAt")]
-    start_at: i64,
+    _start_at: i64,
     #[serde(rename = "maxResults")]
     max_results: i64,
 }
