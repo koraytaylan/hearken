@@ -3,6 +3,9 @@ name = "hearken-ml"
 version = "0.2.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 hearken-core = { version = "0.2.0", path = "../hearken-core" }
 rayon = "1.11.0"

@@ -194,9 +194,10 @@ pub fn get_pattern_timestamps(
     match result {
         Ok((Some(min_ts), Some(max_ts))) => {
             let fmt_ts = |ts: i64| {
-                chrono::DateTime::from_timestamp(ts, 0)
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-                    .unwrap_or_else(|| ts.to_string())
+                chrono::DateTime::from_timestamp(ts, 0).map_or_else(
+                    || ts.to_string(),
+                    |dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                )
             };
             (Some(fmt_ts(min_ts)), Some(fmt_ts(max_ts)))
         }

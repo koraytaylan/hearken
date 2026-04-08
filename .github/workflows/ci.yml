@@ -23,9 +23,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy (default features)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy (web feature)
-        run: cargo clippy --all-targets --features web -- -D warnings
+        run: cargo clippy --workspace --all-targets --features web -- -D warnings
+      - name: Clippy (jira feature)
+        run: cargo clippy --workspace --all-targets --features jira -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})

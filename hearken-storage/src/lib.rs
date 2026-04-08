@@ -185,7 +185,7 @@ impl Storage {
                 .map(|_| "p.template LIKE ?".to_string())
                 .collect();
             conditions.push(format!("({})", like_conds.join(" OR ")));
-            bind_values.extend(terms.iter().map(|t| format!("%{}%", t)));
+            bind_values.extend(terms.iter().map(|t| format!("%{t}%")));
         }
 
         if let Some(groups) = group_filter.filter(|g| !g.is_empty()) {
@@ -211,7 +211,7 @@ impl Storage {
         params_vec.push(Box::new(limit as i64));
 
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params_vec.iter().map(|p| p.as_ref()).collect();
+            params_vec.iter().map(std::convert::AsRef::as_ref).collect();
 
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -307,7 +307,7 @@ impl Storage {
                 .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
                 .collect();
             let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-                params.iter().map(|p| p.as_ref()).collect();
+                params.iter().map(std::convert::AsRef::as_ref).collect();
             let rows = stmt.query_map(params_refs.as_slice(), |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -352,7 +352,7 @@ impl Storage {
                 )
             };
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+            params.iter().map(std::convert::AsRef::as_ref).collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -421,7 +421,7 @@ impl Storage {
                 .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
                 .collect();
             let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-                params.iter().map(|p| p.as_ref()).collect();
+                params.iter().map(std::convert::AsRef::as_ref).collect();
             let rows = stmt.query_map(params_refs.as_slice(), |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -517,7 +517,7 @@ impl Storage {
             )
         };
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+            params.iter().map(std::convert::AsRef::as_ref).collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))

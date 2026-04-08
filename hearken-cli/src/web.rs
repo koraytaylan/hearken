@@ -96,13 +96,13 @@ pub async fn run_server(db_path: &str, port: u16) -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(shared);
 
-    let addr = format!("0.0.0.0:{}", port);
-    println!("Hearken web dashboard: http://127.0.0.1:{}", port);
+    let addr = format!("0.0.0.0:{port}");
+    println!("Hearken web dashboard: http://127.0.0.1:{port}");
     println!("Press Ctrl+C to stop");
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .with_context(|| format!("Failed to bind to {}", addr))?;
+        .with_context(|| format!("Failed to bind to {addr}"))?;
     axum::serve(listener, app).await.context("Server error")?;
 
     Ok(())
@@ -304,9 +304,9 @@ async fn anomalies_handler(State(storage): State<SharedStorage>) -> impl IntoRes
         let mut score = 0.0f64;
 
         let group_sources = source_counts.get(group).copied().unwrap_or(1);
-        let pattern_sources = trends.get(id).map(|t| t.len()).unwrap_or(1);
+        let pattern_sources = trends.get(id).map_or(1, std::vec::Vec::len);
         if group_sources > 1 && pattern_sources == 1 {
-            reasons.push(format!("single-source (1/{} files)", group_sources));
+            reasons.push(format!("single-source (1/{group_sources} files)"));
             score += 2.0;
         }
 
@@ -314,7 +314,7 @@ async fn anomalies_handler(State(storage): State<SharedStorage>) -> impl IntoRes
             if stddev > 0.0 {
                 let z = (*count as f64 - mean) / stddev;
                 if z > 3.0 {
-                    reasons.push(format!("high-count outlier (z={:.1})", z));
+                    reasons.push(format!("high-count outlier (z={z:.1})"));
                     score += z;
                 }
             }

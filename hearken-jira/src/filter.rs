@@ -53,7 +53,7 @@ pub fn filter_patterns(
 
         // Filter: tags (must have at least one matching tag)
         if let Some(required_tags) = &options.tags {
-            let pattern_tags = tag_map.get(&id).map(|v| v.as_slice()).unwrap_or(&[]);
+            let pattern_tags = tag_map.get(&id).map_or(&[][..], |v| v.as_slice());
             let has_match = required_tags
                 .iter()
                 .any(|rt| pattern_tags.iter().any(|pt| pt == rt));
@@ -64,7 +64,7 @@ pub fn filter_patterns(
 
         // Filter: exclude_tags (skip if pattern has any excluded tag)
         if let Some(excluded_tags) = &options.exclude_tags {
-            let pattern_tags = tag_map.get(&id).map(|v| v.as_slice()).unwrap_or(&[]);
+            let pattern_tags = tag_map.get(&id).map_or(&[][..], |v| v.as_slice());
             let has_excluded = excluded_tags
                 .iter()
                 .any(|et| pattern_tags.iter().any(|pt| pt == et));

@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::fs;
 use std::process::Command;
 use tempfile::TempDir;
@@ -22,33 +23,40 @@ fn generate_log_lines(count: usize, prefix: &str) -> String {
         } else {
             "*INFO*"
         };
-        lines.push_str(&format!(
-            "2026-01-15 08:00:{:02}.{:03} {} [pool-thread-{}] com.app.Service - Operation completed in {}ms for request-{}\n",
+        writeln!(
+            lines,
+            "2026-01-15 08:00:{:02}.{:03} {} [pool-thread-{}] com.app.Service - Operation completed in {}ms for request-{}",
             i % 60, i % 1000, level, i % 8, (i * 7) % 500, i
-        ));
+        ).unwrap();
         // Add a multi-line entry every 10 lines
         if i % 10 == 0 {
-            lines.push_str(&format!(
-                "2026-01-15 08:00:{:02}.{:03} *ERROR* [pool-thread-{}] com.app.Handler - Processing failed for item-{}\n",
+            writeln!(
+                lines,
+                "2026-01-15 08:00:{:02}.{:03} *ERROR* [pool-thread-{}] com.app.Handler - Processing failed for item-{}",
                 i % 60, i % 1000, i % 8, i
-            ));
+            ).unwrap();
             lines.push_str("java.lang.RuntimeException: Something went wrong\n");
-            lines.push_str(&format!(
-                "\tat com.app.Handler.process(Handler.java:{})\n",
+            writeln!(
+                lines,
+                "\tat com.app.Handler.process(Handler.java:{})",
                 100 + i % 50
-            ));
-            lines.push_str(&format!(
-                "\tat com.app.Service.run(Service.java:{})\n",
+            )
+            .unwrap();
+            writeln!(
+                lines,
+                "\tat com.app.Service.run(Service.java:{})",
                 200 + i % 30
-            ));
+            )
+            .unwrap();
             lines.push_str("\tat com.app.Main.main(Main.java:42)\n");
         }
         // Add a different pattern for variety
         if i % 20 == 0 {
-            lines.push_str(&format!(
-                "2026-01-15 08:00:{:02}.{:03} *WARN* [scheduler-{}] {} - Retry attempt {} for task-{}\n",
+            writeln!(
+                lines,
+                "2026-01-15 08:00:{:02}.{:03} *WARN* [scheduler-{}] {} - Retry attempt {} for task-{}",
                 i % 60, i % 1000, i % 4, prefix, (i / 20) + 1, i
-            ));
+            ).unwrap();
         }
     }
     lines
@@ -117,8 +125,7 @@ fn test_process_multi_file_grouping() {
     );
     assert!(
         stdout.contains("2 file group(s) from 3 file(s)"),
-        "Should detect 2 groups from 3 files: {}",
-        stdout
+        "Should detect 2 groups from 3 files: {stdout}"
     );
     assert!(stdout.contains("error.log"), "Should have error.log group");
     assert!(
@@ -166,8 +173,7 @@ fn test_process_and_search() {
     );
     assert!(
         stdout.contains("Operation") || stdout.contains("completed"),
-        "Search should find matching patterns: {}",
-        stdout
+        "Search should find matching patterns: {stdout}"
     );
 }
 
@@ -291,8 +297,7 @@ fn test_validation_bad_threshold() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("threshold") && stderr.contains("0.0"),
-        "Should mention threshold range: {}",
-        stderr
+        "Should mention threshold range: {stderr}"
     );
 }
 
@@ -318,8 +323,7 @@ fn test_validation_nonexistent_file() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("does not exist") || stderr.contains("No valid files"),
-        "Should warn about missing file: {}",
-        stderr
+        "Should warn about missing file: {stderr}"
     );
 }
 
@@ -345,8 +349,7 @@ fn test_validation_empty_file() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("empty") || stderr.contains("No valid files"),
-        "Should warn about empty file: {}",
-        stderr
+        "Should warn about empty file: {stderr}"
     );
 }
 
@@ -359,16 +362,20 @@ fn test_multiline_entries_in_patterns() {
     // Create log with consistent multi-line entries
     let mut log_content = String::new();
     for i in 0..50 {
-        log_content.push_str(&format!(
-            "2026-01-15 10:00:{:02}.000 *ERROR* [thread-{}] com.app.Handler - Request failed\n",
+        writeln!(
+            log_content,
+            "2026-01-15 10:00:{:02}.000 *ERROR* [thread-{}] com.app.Handler - Request failed",
             i % 60,
             i % 4
-        ));
+        )
+        .unwrap();
         log_content.push_str("java.lang.NullPointerException: Value was null\n");
-        log_content.push_str(&format!(
-            "\tat com.app.Handler.handle(Handler.java:{})\n",
+        writeln!(
+            log_content,
+            "\tat com.app.Handler.handle(Handler.java:{})",
             50 + i
-        ));
+        )
+        .unwrap();
         log_content.push_str("\tat com.app.Server.dispatch(Server.java:120)\n");
     }
 
@@ -404,8 +411,7 @@ fn test_multiline_entries_in_patterns() {
     assert!(output.status.success(), "Search failed");
     assert!(
         stdout.contains("NullPointerException"),
-        "Should find multi-line pattern with exception: {}",
-        stdout
+        "Should find multi-line pattern with exception: {stdout}"
     );
 }
 
@@ -772,12 +778,11 @@ fn test_baseline_save_and_compare() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "Baseline save failed: {}", stdout);
+    assert!(output.status.success(), "Baseline save failed: {stdout}");
     assert!(baseline_file.exists(), "Baseline file should exist");
     assert!(
         stdout.contains("Baseline saved"),
-        "Should confirm save: {}",
-        stdout
+        "Should confirm save: {stdout}"
     );
 
     // Compare (should show no changes since same data)
@@ -792,15 +797,10 @@ fn test_baseline_save_and_compare() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "Baseline compare failed: {}",
-        stdout
-    );
+    assert!(output.status.success(), "Baseline compare failed: {stdout}");
     assert!(
         stdout.contains("0 new"),
-        "Should show no new patterns: {}",
-        stdout
+        "Should show no new patterns: {stdout}"
     );
 }
 
@@ -891,8 +891,7 @@ fn test_correlate_command() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Finding correlations"),
-        "Should show progress: {}",
-        stdout
+        "Should show progress: {stdout}"
     );
 }
 
@@ -926,13 +925,11 @@ fn test_process_stdin() {
     );
     assert!(
         stdout.contains("file group(s)"),
-        "Should print group info: {}",
-        stdout
+        "Should print group info: {stdout}"
     );
     assert!(
         stdout.contains("stdin"),
-        "Group name should be 'stdin': {}",
-        stdout
+        "Group name should be 'stdin': {stdout}"
     );
     assert!(db_file.exists(), "Database should be created");
 }
@@ -974,8 +971,7 @@ fn test_process_stdin_with_group_name() {
     );
     assert!(
         stdout.contains("my-logs"),
-        "Group name should be 'my-logs': {}",
-        stdout
+        "Group name should be 'my-logs': {stdout}"
     );
 }
 
@@ -1037,21 +1033,18 @@ fn test_watch_detects_appended_content() {
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
 
     assert!(
         combined.contains("[watch] Initial processing complete"),
-        "Should complete initial processing. Output:\n{}",
-        combined
+        "Should complete initial processing. Output:\n{combined}"
     );
     assert!(
         combined.contains("[watch] File modified:"),
-        "Should detect file modification. Output:\n{}",
-        combined
+        "Should detect file modification. Output:\n{combined}"
     );
     assert!(
         combined.contains("new entries"),
-        "Should report new entries. Output:\n{}",
-        combined
+        "Should report new entries. Output:\n{combined}"
     );
 }

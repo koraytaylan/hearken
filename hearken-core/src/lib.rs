@@ -100,7 +100,7 @@ fn parse_syslog_month(s: &str) -> Option<u32> {
 /// 5. Unix epoch: 10-digit number at line start
 pub fn extract_timestamp(line: &str) -> Option<i64> {
     const NUM_FORMATS: usize = 6;
-    let start = LAST_TS_FORMAT.with(|c| c.get());
+    let start = LAST_TS_FORMAT.with(std::cell::Cell::get);
 
     for offset in 0..NUM_FORMATS {
         let idx = (start + offset) % NUM_FORMATS;
@@ -296,42 +296,39 @@ impl LogReader {
             }
 
             let remaining = &content[current_offset..];
-            match remaining.iter().position(|&b| b == b'\n') {
-                Some(pos) => {
-                    let mut line_bytes = &remaining[..pos];
+            if let Some(pos) = remaining.iter().position(|&b| b == b'\n') {
+                let mut line_bytes = &remaining[..pos];
 
-                    // Strip CR if present
-                    if line_bytes.last() == Some(&b'\r') {
-                        line_bytes = &line_bytes[..line_bytes.len() - 1];
-                    }
-
-                    // Fast byte-level truncation
-                    if line_bytes.len() > 64 * 1024 {
-                        line_bytes = &line_bytes[..64 * 1024];
-                    }
-
-                    // Safe, zero-allocation UTF-8 conversion.
-                    // If it fails (e.g., binary dump or cut in middle of multibyte char), we just get ""
-                    let line = std::str::from_utf8(line_bytes).unwrap_or("");
-
-                    let next_pos = start_pos + current_offset as u64 + pos as u64 + 1;
-                    lines.push((start_pos + current_offset as u64, line, next_pos));
-                    current_offset += pos + 1;
+                // Strip CR if present
+                if line_bytes.last() == Some(&b'\r') {
+                    line_bytes = &line_bytes[..line_bytes.len() - 1];
                 }
-                None => {
-                    let mut line_bytes = remaining;
-                    if line_bytes.last() == Some(&b'\r') {
-                        line_bytes = &line_bytes[..line_bytes.len() - 1];
-                    }
-                    if line_bytes.len() > 64 * 1024 {
-                        line_bytes = &line_bytes[..64 * 1024];
-                    }
 
-                    let line = std::str::from_utf8(line_bytes).unwrap_or("");
-                    let next_pos = start_pos + content.len() as u64;
-                    lines.push((start_pos + current_offset as u64, line, next_pos));
-                    break;
+                // Fast byte-level truncation
+                if line_bytes.len() > 64 * 1024 {
+                    line_bytes = &line_bytes[..64 * 1024];
                 }
+
+                // Safe, zero-allocation UTF-8 conversion.
+                // If it fails (e.g., binary dump or cut in middle of multibyte char), we just get ""
+                let line = std::str::from_utf8(line_bytes).unwrap_or("");
+
+                let next_pos = start_pos + current_offset as u64 + pos as u64 + 1;
+                lines.push((start_pos + current_offset as u64, line, next_pos));
+                current_offset += pos + 1;
+            } else {
+                let mut line_bytes = remaining;
+                if line_bytes.last() == Some(&b'\r') {
+                    line_bytes = &line_bytes[..line_bytes.len() - 1];
+                }
+                if line_bytes.len() > 64 * 1024 {
+                    line_bytes = &line_bytes[..64 * 1024];
+                }
+
+                let line = std::str::from_utf8(line_bytes).unwrap_or("");
+                let next_pos = start_pos + content.len() as u64;
+                lines.push((start_pos + current_offset as u64, line, next_pos));
+                break;
             }
         }
 
@@ -408,25 +405,25 @@ mod tests {
     #[test]
     fn test_extract_timestamp_iso8601_t_zulu() {
         let ts = extract_timestamp("2026-01-15T08:00:00.123Z some log message");
-        assert_eq!(ts, Some(1768464000));
+        assert_eq!(ts, Some(1_768_464_000));
     }
 
     #[test]
     fn test_extract_timestamp_iso8601_t_no_frac() {
         let ts = extract_timestamp("2026-01-15T08:00:00Z INFO starting up");
-        assert_eq!(ts, Some(1768464000));
+        assert_eq!(ts, Some(1_768_464_000));
     }
 
     #[test]
     fn test_extract_timestamp_iso8601_space_comma() {
         let ts = extract_timestamp("2026-01-15 08:00:00,123 INFO starting up");
-        assert_eq!(ts, Some(1768464000));
+        assert_eq!(ts, Some(1_768_464_000));
     }
 
     #[test]
     fn test_extract_timestamp_iso8601_space_dot() {
         let ts = extract_timestamp("2026-01-15 08:00:00.123 INFO starting up");
-        assert_eq!(ts, Some(1768464000));
+        assert_eq!(ts, Some(1_768_464_000));
     }
 
     #[test]
@@ -447,25 +444,25 @@ mod tests {
     #[test]
     fn test_extract_timestamp_common_log() {
         let ts = extract_timestamp("15/Mar/2026:08:00:00 +0000 \"GET / HTTP/1.1\"");
-        assert_eq!(ts, Some(1773561600));
+        assert_eq!(ts, Some(1_773_561_600));
     }
 
     #[test]
     fn test_extract_timestamp_common_log_bracketed() {
         let ts = extract_timestamp("[15/Mar/2026:08:00:00 +0000] \"GET / HTTP/1.1\"");
-        assert_eq!(ts, Some(1773561600));
+        assert_eq!(ts, Some(1_773_561_600));
     }
 
     #[test]
     fn test_extract_timestamp_unix_epoch() {
         let ts = extract_timestamp("1742000000 some event");
-        assert_eq!(ts, Some(1742000000));
+        assert_eq!(ts, Some(1_742_000_000));
     }
 
     #[test]
     fn test_extract_timestamp_unix_epoch_exact() {
         let ts = extract_timestamp("1742000000");
-        assert_eq!(ts, Some(1742000000));
+        assert_eq!(ts, Some(1_742_000_000));
     }
 
     #[test]
