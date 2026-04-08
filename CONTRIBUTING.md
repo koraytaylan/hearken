@@ -69,6 +69,7 @@ cargo fmt --all -- --check
 # Run clippy (must pass with zero warnings)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features web -- -D warnings
+cargo clippy --workspace --all-targets --features jira -- -D warnings
 
 # Run tests
 cargo test --workspace
