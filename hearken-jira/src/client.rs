@@ -41,14 +41,14 @@ fn base64_encode(input: &str) -> String {
     let mut i = 0;
 
     while i < bytes.len() {
-        let b0 = bytes[i] as u32;
+        let b0 = u32::from(bytes[i]);
         let b1 = if i + 1 < bytes.len() {
-            bytes[i + 1] as u32
+            u32::from(bytes[i + 1])
         } else {
             0
         };
         let b2 = if i + 2 < bytes.len() {
-            bytes[i + 2] as u32
+            u32::from(bytes[i + 2])
         } else {
             0
         };

@@ -8,6 +8,38 @@ members = [
 ]
 resolver = "2"
 
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# --- Temporarily allowed pedantic lints ---
+# These are allowed incrementally; remove as code is cleaned up.
+
+# Cast lints — common in numeric/log-processing code
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+
+# Documentation lints — to be enabled incrementally
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+
+# Style lints — too noisy for initial adoption
+must_use_candidate = "allow"
+module_name_repetitions = "allow"
+implicit_hasher = "allow"
+items_after_statements = "allow"
+too_many_lines = "allow"
+needless_pass_by_value = "allow"
+float_cmp = "allow"
+unused_self = "allow"
+uninlined_format_args = "allow"
+struct_field_names = "allow"
+inline_always = "allow"
+collapsible_if = "allow"
+too_many_arguments = "allow"
+
 [profile.release]
 lto = true
 codegen-units = 1

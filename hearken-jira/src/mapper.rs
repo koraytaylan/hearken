@@ -1,5 +1,6 @@
 use chrono::Utc;
 use serde_json::{Value, json};
+use std::fmt::Write;
 
 /// Metadata marker embedded in JIRA ticket descriptions so hearken can
 /// identify and update its own tickets.
@@ -166,17 +167,18 @@ pub fn build_description_wiki(input: &TicketBodyInput) -> String {
     body.push_str("\n{noformat}\n\n");
 
     // Stats
-    body.push_str(&format!(
-        "*Occurrences:* {}\n",
+    let _ = writeln!(
+        body,
+        "*Occurrences:* {}",
         format_number(input.occurrence_count)
-    ));
+    );
     if let Some(ref first) = input.first_seen {
-        body.push_str(&format!("*First seen:* {}\n", first));
+        let _ = writeln!(body, "*First seen:* {first}");
     }
     if let Some(ref last) = input.last_seen {
-        body.push_str(&format!("*Last seen:* {}\n", last));
+        let _ = writeln!(body, "*Last seen:* {last}");
     }
-    body.push_str(&format!("*File group:* {}\n", input.file_group));
+    let _ = writeln!(body, "*File group:* {}", input.file_group);
 
     // Sample log lines
     if !input.samples.is_empty() {
@@ -215,12 +217,12 @@ pub fn build_description_adf(input: &TicketBodyInput) -> Value {
     // Stats paragraph
     let mut stats = format!("Occurrences: {}", format_number(input.occurrence_count));
     if let Some(ref first) = input.first_seen {
-        stats.push_str(&format!(" | First seen: {}", first));
+        let _ = write!(stats, " | First seen: {first}");
     }
     if let Some(ref last) = input.last_seen {
-        stats.push_str(&format!(" | Last seen: {}", last));
+        let _ = write!(stats, " | Last seen: {last}");
     }
-    stats.push_str(&format!(" | File group: {}", input.file_group));
+    let _ = write!(stats, " | File group: {}", input.file_group);
     content.push(paragraph_node(&stats));
 
     // Sample log lines

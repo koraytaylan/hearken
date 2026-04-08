@@ -1,5 +1,6 @@
 #![cfg(feature = "web")]
 
+use std::fmt::Write;
 use std::fs;
 use std::process::Command;
 use tempfile::TempDir;
@@ -16,10 +17,11 @@ fn generate_log_lines(count: usize) -> String {
     let mut lines = String::new();
     for i in 0..count {
         let level = if i % 5 == 0 { "ERROR" } else { "INFO" };
-        lines.push_str(&format!(
-            "2026-01-15 08:00:{:02}.{:03} {} [thread-{}] com.app.Service - Operation completed in {}ms for request-{}\n",
+        writeln!(
+            lines,
+            "2026-01-15 08:00:{:02}.{:03} {} [thread-{}] com.app.Service - Operation completed in {}ms for request-{}",
             i % 60, i % 1000, level, i % 4, (i * 7) % 500, i
-        ));
+        ).unwrap();
     }
     lines
 }
@@ -67,7 +69,7 @@ async fn test_web_server_endpoints() {
         .expect("Failed to start serve command");
 
     // Wait for the server to be ready
-    let base = format!("http://127.0.0.1:{}", port);
+    let base = format!("http://127.0.0.1:{port}");
     let client = reqwest::Client::new();
     let mut ready = false;
     for _ in 0..30 {
@@ -90,7 +92,7 @@ async fn test_web_server_endpoints() {
 
     // Test GET /api/summary returns JSON with expected fields
     let resp = client
-        .get(format!("{}/api/summary", base))
+        .get(format!("{base}/api/summary"))
         .send()
         .await
         .unwrap();
@@ -105,7 +107,7 @@ async fn test_web_server_endpoints() {
 
     // Test GET /api/patterns returns patterns
     let resp = client
-        .get(format!("{}/api/patterns?top=10", base))
+        .get(format!("{base}/api/patterns?top=10"))
         .send()
         .await
         .unwrap();
@@ -121,7 +123,7 @@ async fn test_web_server_endpoints() {
 
     // Test GET /api/anomalies returns array
     let resp = client
-        .get(format!("{}/api/anomalies", base))
+        .get(format!("{base}/api/anomalies"))
         .send()
         .await
         .unwrap();
@@ -132,7 +134,7 @@ async fn test_web_server_endpoints() {
     // Test POST /api/tags
     let pattern_id = patterns[0]["id"].as_i64().unwrap();
     let resp = client
-        .post(format!("{}/api/tags", base))
+        .post(format!("{base}/api/tags"))
         .json(&serde_json::json!({"pattern_id": pattern_id, "tags": ["important", "reviewed"]}))
         .send()
         .await
@@ -143,7 +145,7 @@ async fn test_web_server_endpoints() {
 
     // Verify tags appear in pattern response
     let resp = client
-        .get(format!("{}/api/patterns?top=10", base))
+        .get(format!("{base}/api/patterns?top=10"))
         .send()
         .await
         .unwrap();
@@ -165,7 +167,7 @@ async fn test_web_server_endpoints() {
 
     // Test GET /api/export?format=json
     let resp = client
-        .get(format!("{}/api/export?format=json", base))
+        .get(format!("{base}/api/export?format=json"))
         .send()
         .await
         .unwrap();

@@ -18,7 +18,7 @@ pub fn template_similarity(a: &[String], b: &[String]) -> f64 {
     if a.is_empty() {
         return 1.0;
     }
-    let mut matches = 0;
+    let mut matches: u32 = 0;
     for (ta, tb) in a.iter().zip(b.iter()) {
         if ta == "\n" || tb == "\n" {
             if ta != tb {
@@ -31,7 +31,7 @@ pub fn template_similarity(a: &[String], b: &[String]) -> f64 {
             matches += 1;
         }
     }
-    matches as f64 / a.len() as f64
+    f64::from(matches) / a.len() as f64
 }
 
 /// Computes semantic similarity between two template token vectors using cosine similarity.
@@ -75,7 +75,7 @@ fn tfidf_vector(tokens: &[String], idf: &HashMap<String, f64>) -> HashMap<String
         *tf.entry(t.clone()).or_insert(0.0) += 1.0;
     }
 
-    for (token, freq) in tf.iter_mut() {
+    for (token, freq) in &mut tf {
         *freq = (*freq / count) * idf.get(token).copied().unwrap_or(1.0);
     }
     tf
@@ -215,7 +215,11 @@ impl LogParser {
             if i > 0 {
                 tokens.push("\n".to_string());
             }
-            tokens.extend(tokenize(line).into_iter().map(|s| s.to_string()));
+            tokens.extend(
+                tokenize(line)
+                    .into_iter()
+                    .map(std::string::ToString::to_string),
+            );
         }
         let token_count = tokens.len();
         if token_count == 0 {
@@ -406,7 +410,7 @@ impl LogParser {
         if tokens.len() != template_tokens.len() {
             return 0.0;
         }
-        let mut matches = 0;
+        let mut matches: u32 = 0;
         for (t, temp_t) in tokens.iter().zip(template_tokens.iter()) {
             // Newline structure must match exactly — entries with different
             // continuation line boundaries must never merge into the same pattern
@@ -421,7 +425,7 @@ impl LogParser {
                 matches += 1;
             }
         }
-        matches as f64 / tokens.len() as f64
+        f64::from(matches) / tokens.len() as f64
     }
 
     fn create_initial_tokens(&self, tokens: &[&str]) -> Vec<String> {
@@ -621,10 +625,9 @@ mod tests {
         let sim = semantic_similarity(&a, &b, &idf);
         assert!(
             sim > 0.3,
-            "Should have some similarity due to shared 'connection': {}",
-            sim
+            "Should have some similarity due to shared 'connection': {sim}"
         );
-        assert!(sim < 0.9, "Should not be too similar: {}", sim);
+        assert!(sim < 0.9, "Should not be too similar: {sim}");
     }
 
     #[test]

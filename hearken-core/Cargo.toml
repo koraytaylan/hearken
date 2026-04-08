@@ -3,6 +3,9 @@ name = "hearken-core"
 version = "0.2.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 chrono = { version = "0.4.44", features = ["serde"] }
 memmap2 = "0.9.10"

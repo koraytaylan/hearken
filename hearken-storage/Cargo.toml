@@ -3,6 +3,9 @@ name = "hearken-storage"
 version = "0.2.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 hearken-core = { version = "0.2.0", path = "../hearken-core" }
 rusqlite = { version = "0.39.0", features = ["bundled"] }

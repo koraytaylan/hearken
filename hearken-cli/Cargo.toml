@@ -3,6 +3,9 @@ name = "hearken-cli"
 version = "0.2.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 web = ["axum", "tokio", "tower-http"]
 jira = ["hearken-jira", "tokio"]
