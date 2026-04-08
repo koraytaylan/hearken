@@ -18,7 +18,7 @@ pub fn template_similarity(a: &[String], b: &[String]) -> f64 {
     if a.is_empty() {
         return 1.0;
     }
-    let mut matches = 0;
+    let mut matches: u32 = 0;
     for (ta, tb) in a.iter().zip(b.iter()) {
         if ta == "\n" || tb == "\n" {
             if ta != tb {
@@ -410,7 +410,7 @@ impl LogParser {
         if tokens.len() != template_tokens.len() {
             return 0.0;
         }
-        let mut matches = 0;
+        let mut matches: u32 = 0;
         for (t, temp_t) in tokens.iter().zip(template_tokens.iter()) {
             // Newline structure must match exactly — entries with different
             // continuation line boundaries must never merge into the same pattern
